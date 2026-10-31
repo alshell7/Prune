@@ -36,13 +36,26 @@ final class ProjectIndex {
     var gitRepos: [URL] = []
     var gitFileDirs: [URL] = []
     var files: [String: [URL]] = [:]
+    /// Large files found directly on selected external disks, independent of Spotlight.
+    var largeFiles: [URL] = []
     var venvs: [URL] = []
     var ecosystemActivity: [Ecosystem: Date] = [:]
     var ecosystemLatestProject: [Ecosystem: String] = [:]
     var ecosystemProjects: [Ecosystem: Set<String>] = [:]
     var scopeActivity: [String: Date] = [:]
     var dirsVisited = 0
+    var unreadableDirs = 0
+    var depthLimited = false
+    var directoryLimitReached = false
     var roots: [URL] = []
+
+    var coverageWarning: String? {
+        var reasons: [String] = []
+        if directoryLimitReached { reasons.append("the 1,500,000-directory limit was reached") }
+        if depthLimited { reasons.append("some folders exceeded the 14-level project-walk limit") }
+        if unreadableDirs > 0 { reasons.append("\(unreadableDirs) folders could not be read") }
+        return reasons.isEmpty ? nil : "Project discovery was incomplete: " + reasons.joined(separator: "; ") + "."
+    }
 
     // MARK: - Lookup helpers
 
@@ -120,11 +133,14 @@ final class ProjectIndex {
         var gitRepos: [URL] = []
         var gitFileDirs: [URL] = []
         var files: [String: [URL]] = [:]
+        var largeFiles: [URL] = []
         var venvs: [URL] = []
         var visited = 0
+        var unreadable = 0
+        var depthLimited = false
     }
 
-    static func build(roots: [URL], settings: SettingsSnapshot, progress: @escaping (String) -> Void) -> ProjectIndex {
+    static func build(roots: [URL], settings: SettingsSnapshot, largeFileRoots: [URL] = [], progress: @escaping (String) -> Void) -> ProjectIndex {
         let idx = ProjectIndex()
         idx.roots = roots
         let home = FS.home.path
@@ -135,20 +151,30 @@ final class ProjectIndex {
         let rulesByName = ArtifactRules.byName
         let maxDepth = 14
         let maxDirs = 1_500_000
+        let explicitRoots = Set(roots.map { $0.standardizedFileURL.path })
+        let excluded = (settings.excludedPaths + settings.excludedVolumes).map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        let largeThreshold = Int64(max(1, settings.largeFileMB)) * 1_048_576
+        let largeRootPaths = largeFileRoots.map { $0.standardizedFileURL.path }
 
         // Work-stealing walk across threads.
         let cond = NSCondition()
         var stack: [(String, Int)] = roots.map { ($0.path, 0) }
         var pending = stack.count
+        var visitedPaths = Set<String>()
         var totalVisited = 0
         var lastReport = Date()
         var locals: [Local] = []
 
         func process(_ dir: String, _ depth: Int, _ local: inout Local, _ push: inout [(String, Int)]) {
+            guard !settings.isExcluded(URL(fileURLWithPath: dir)) else { return }
             local.visited += 1
-            guard let entries = FS.list(dir) else { return }
-            let names = Set(entries.map(\.name))
             let dirURL = URL(fileURLWithPath: dir)
+            guard let listed = FS.list(dir) else { local.unreadable += 1; return }
+            let entries = excluded.isEmpty ? listed : listed.filter { entry in
+                let child = (dir as NSString).appendingPathComponent(entry.name)
+                return !excluded.contains { child == $0 || FS.isAncestor($0, of: child) }
+            }
+            let names = Set(entries.map(\.name))
 
             // A folder tagged as a cache by the CACHEDIR.TAG standard.
             if depth > 0, names.contains("CACHEDIR.TAG") {
@@ -173,14 +199,27 @@ final class ProjectIndex {
             for e in entries where !e.isDir && interestingFiles.contains(e.name) {
                 local.files[e.name, default: []].append(dirURL.appendingPathComponent(e.name))
             }
+            if largeRootPaths.contains(where: { dir == $0 || FS.isAncestor($0, of: dir) }) {
+                for e in entries where !e.isDir && !e.isLink {
+                    let child = dirURL.appendingPathComponent(e.name)
+                    guard !settings.isExcluded(child) else { continue }
+                    var st = stat()
+                    if lstat(child.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG,
+                       Int64(st.st_blocks) * 512 >= largeThreshold {
+                        local.largeFiles.append(child)
+                    }
+                }
+            }
             for e in entries where e.isDir && !e.isLink {
                 let name = e.name
                 let child = dir == "/" ? "/" + name : dir + "/" + name
+                // A separately selected root has its own depth budget, even if its parent is also scanned.
+                if explicitRoots.contains(child) { continue }
                 if skipPaths.contains(child) { continue }
                 if name.hasSuffix(".app") || name.hasSuffix(".photoslibrary") || name.hasSuffix(".xcodeproj")
                     || name.hasSuffix(".xcworkspace") || name.hasSuffix(".bundle") || name.hasSuffix(".framework") { continue }
                 if dir == home && (name.hasPrefix(".") || skipHomeTop.contains(name)) { continue }
-                if !settings.excludedPaths.isEmpty && settings.isExcluded(URL(fileURLWithPath: child)) { continue }
+                if settings.isExcluded(URL(fileURLWithPath: child)) { continue }
 
                 // <prefix>/lib/node_modules is a Node installation's global packages (npm itself lives there).
                 if name == "node_modules" && (dir as NSString).lastPathComponent == "lib" { continue }
@@ -195,6 +234,7 @@ final class ProjectIndex {
                 }
                 if skipNames.contains(name) { continue }
                 if depth + 1 <= maxDepth { push.append((child, depth + 1)) }
+                else { local.depthLimited = true }
             }
         }
 
@@ -209,6 +249,12 @@ final class ProjectIndex {
                     cond.lock()
                     while stack.isEmpty && pending > 0 { cond.wait() }
                     guard let (dir, depth) = stack.popLast() else { cond.unlock(); break }
+                    guard visitedPaths.insert(dir).inserted else {
+                        pending -= 1
+                        cond.broadcast()
+                        cond.unlock()
+                        continue
+                    }
                     totalVisited += 1
                     let report = Date().timeIntervalSince(lastReport) > 0.25
                     if report { lastReport = Date() }
@@ -239,9 +285,13 @@ final class ProjectIndex {
             idx.gitRepos += l.gitRepos
             idx.gitFileDirs += l.gitFileDirs
             idx.venvs += l.venvs
+            idx.largeFiles += l.largeFiles
             for (k, v) in l.files { idx.files[k, default: []] += v }
             idx.dirsVisited += l.visited
+            idx.unreadableDirs += l.unreadable
+            idx.depthLimited = idx.depthLimited || l.depthLimited
         }
+        idx.directoryLimitReached = totalVisited > maxDirs
         idx.artifacts.sort { $0.url.path < $1.url.path }
         idx.computeActivity()
         return idx

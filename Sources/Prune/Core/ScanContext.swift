@@ -52,6 +52,7 @@ final class ScanContext {
     let apps: AppIndex
     let running: Set<String>
     let hasFDA: Bool
+    let volumes: [VolumeInfo]
     let home = FS.home
     var projectProgress: ((String) -> Void)?
 
@@ -63,6 +64,7 @@ final class ScanContext {
         self.apps = AppIndex.build()
         self.running = SystemInfo.runningBundleIDs()
         self.hasFDA = SystemInfo.hasFullDiskAccess()
+        self.volumes = SystemInfo.volumes()
     }
 
     /// Other apps' containers are protected: touching them without Full Disk Access raises a blocking consent prompt.
@@ -73,23 +75,47 @@ final class ScanContext {
     }
 
     var scanRoots: [URL] {
-        var roots = settings.scanRoots.filter { FS.isDir($0) }
-        if settings.includeExternalVolumes {
-            for v in SystemInfo.externalVolumeRoots() where !settings.excludedVolumes.contains(v.path)
-                && !roots.contains(where: { FS.isAncestor($0.path, of: v.path) || $0 == v }) {
-                roots.append(v)
+        settings.resolvedScanRoots(externalVolumes: volumes.filter { !$0.isBoot && $0.url.path.hasPrefix("/Volumes/") }.map(\.url))
+    }
+
+    var externalScanRoots: [URL] {
+        let external = volumes.filter { !$0.isBoot && $0.url.path.hasPrefix("/Volumes/") }.map(\.url.path)
+        return scanRoots.filter { root in external.contains { root.path == $0 || FS.isAncestor($0, of: root.path) } }
+    }
+
+    func includesExternalFile(_ path: String) -> Bool {
+        let scopes = externalScanRoots + scanRoots.filter { $0.path == "/Volumes" }
+        return scopes.contains { $0.path == path || FS.isAncestor($0.path, of: path) }
+    }
+
+    /// Read-only drives are useful to analyze, but must not offer cleanup actions.
+    func markReadOnly(_ items: [CleanupItem]) -> [CleanupItem] {
+        Self.markReadOnly(items, volumes: volumes)
+    }
+
+    static func markReadOnly(_ items: [CleanupItem], volumes: [VolumeInfo]) -> [CleanupItem] {
+        let readOnly = volumes.filter { !$0.isBoot && $0.readOnly }.map(\.url.path)
+        return items.map { item in
+            var item = item
+            if item.paths.contains(where: { path in readOnly.contains { path.path == $0 || FS.isAncestor($0, of: path.path) } }) {
+                item.lockedReason = item.lockedReason ?? "This drive is mounted read-only."
             }
+            return item
         }
-        // Remove roots nested inside other roots.
-        return roots.filter { r in !roots.contains { $0 != r && FS.isAncestor($0.path, of: r.path) } }
     }
 
     func projects() -> ProjectIndex {
         lock.lock(); defer { lock.unlock() }
         if let p = _projects { return p }
-        let p = ProjectIndex.build(roots: scanRoots, settings: settings) { [weak self] msg in self?.projectProgress?(msg) }
+        let p = ProjectIndex.build(roots: scanRoots, settings: settings, largeFileRoots: externalScanRoots) { [weak self] msg in self?.projectProgress?(msg) }
         _projects = p
         return p
+    }
+
+    func projectCoverageWarning() -> String? {
+        guard lock.try() else { return "The project index did not finish; some results may be missing." }
+        defer { lock.unlock() }
+        return _projects?.coverageWarning ?? (_projects == nil ? "The project index did not finish; some results may be missing." : nil)
     }
 
     var minBytes: Int64 { Int64(settings.minItemMB) * 1_048_576 }

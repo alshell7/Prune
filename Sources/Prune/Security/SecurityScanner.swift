@@ -4,12 +4,11 @@ import Foundation
 enum SecurityScanner {
     static func run(settings: SettingsSnapshot, progress: @escaping (String) -> Void) -> SecurityReport {
         progress("Indexing projects…")
-        let idx = ProjectIndex.build(roots: settings.scanRoots.filter(FS.isDir), settings: settings) { _ in }
+        let idx = ProjectIndex.build(roots: settings.resolvedScanRoots(), settings: settings) { _ in }
         let projectRoots = idx.projects.filter { $0.value.gitKind != .none || idx.outermostProject(for: $0.value.root) == $0.key }.map(\.value.root)
         let nodeModules = idx.artifacts.filter { $0.rule.id == "node_modules" }.map(\.url) + globalNodeModules()
         let sitePackages = pythonSitePackages(venvs: idx.venvs)
 
-        var parts: [SecurityReport] = Array(repeating: SecurityReport(), count: 8)
         let jobs: [(String, (inout SecurityReport) -> Void)] = [
             ("Background items", { PersistenceAnalyzer.scan(report: &$0) }),
             ("Running processes & network", { ProcessAnalyzer.scan(report: &$0) }),
@@ -19,12 +18,15 @@ enum SecurityScanner {
             ("npm & Python packages", { PackageAnalyzer.scan(nodeModulesDirs: nodeModules, sitePackages: sitePackages, report: &$0) }),
             ("AI agents & skills", { AIToolsAnalyzer.scan(projectRoots: projectRoots, report: &$0) }),
             ("Project auto-run code", { ProjectThreatAnalyzer.scan(projectRoots: projectRoots, report: &$0) }),
+            ("Project credentials", { CredentialsAnalyzer.scan(index: idx, settings: settings, report: &$0) }),
         ]
+        var parts: [SecurityReport] = Array(repeating: SecurityReport(), count: jobs.count)
+        let lock = NSLock()
         DispatchQueue.concurrentPerform(iterations: jobs.count) { i in
             progress("Checking \(jobs[i].0.lowercased())…")
             var r = SecurityReport()
             jobs[i].1(&r)
-            parts[i] = r
+            lock.lock(); parts[i] = r; lock.unlock()
         }
         var merged = SecurityReport()
         for p in parts {
@@ -35,6 +37,12 @@ enum SecurityScanner {
             merged.npmPackages.merge(p.npmPackages) { a, _ in a }
         }
         merged.stats["projects"] = projectRoots.count
+        if let warning = idx.coverageWarning {
+            merged.findings.append(SecurityFinding(id: "projects:coverage", area: .projects, severity: .low,
+                title: "Project discovery was incomplete", subtitle: "Some project security checks may be missing", evidence: [warning],
+                explanation: "Project-based security checks can only inspect projects discovered in the selected locations.", legitNote: nil,
+                recommendation: "Check scan locations, permissions, and deeply nested folders, then scan again.", actions: []))
+        }
         merged.findings.sort { ($0.severity, $1.title) > ($1.severity, $0.title) }
         return merged
     }

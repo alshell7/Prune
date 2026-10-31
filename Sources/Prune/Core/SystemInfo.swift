@@ -41,11 +41,11 @@ enum SystemInfo {
 
     static func bootVolume() -> VolumeInfo? { volumes().first { $0.isBoot } ?? volumes().first }
 
-    /// External, writable volumes (scan roots when "include external volumes" is on).
+    /// Mounted local non-boot volumes, including read-only or root-owned volumes.
+    /// Reading a drive does not require write permission at its mount point.
     static func externalVolumeRoots() -> [URL] {
         volumes().filter { !$0.isBoot && $0.url.path.hasPrefix("/Volumes/") }
             .map(\.url)
-            .filter { FileManager.default.isWritableFile(atPath: $0.path) }
     }
 
     /// Full Disk Access probe: these locations are readable only with FDA.

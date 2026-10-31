@@ -59,12 +59,15 @@ A local, read-only check that looks for malware, risky background items, poisone
 | Packages | Known-compromised npm versions (chalk/debug 2025, nx "s1ngularity", Shai-Hulud, eslint-config-prettier, @solana/web3.js…), malicious install scripts, the Shai-Hulud `bundle.js` payload, typosquats, and Python `.pth` startup backdoors. Optional, opt-in **OSV.dev** check for malware reported since this build (sends only package names and versions). |
 | AI agents | Claude Code hooks (personal and project-supplied), MCP servers in Claude, Codex, Cursor, VS Code, Gemini and Windsurf (unpinned packages, plaintext secrets, malicious commands). Third-party skills are scanned for malicious scripts and hidden-Unicode prompt injection. Rule files (CLAUDE.md, AGENTS.md, .cursorrules) are scanned for "rules file backdoor" tricks. |
 | Projects | VS Code tasks that run on folder open (the fake-job-interview "Contagious Interview" technique), git hooks, install scripts, and Xcode build-phase scripts (XCSSET). |
+| Project credentials | `.env` variants and likely hard-coded credentials in project source and configuration, including private-key headers and common token formats. Tracked files and files under public web folders are prioritized; ignored local files and examples are identified separately. |
 | Browser extensions | Sideloaded extensions with broad access in Chromium-family browsers, and force-install files. |
 | System | SIP, Gatekeeper, FileVault, Firewall and XProtect status, plus shell startup files, /etc/hosts overrides, configuration profiles and SSH authorized keys. |
 
 Every finding comes with:
 - a **chain diagram** of how it's wired (item → program → signer → network)
 - the evidence, what it is, why it might be fine, and a recommendation
+
+Credential findings show the file, line number, type of match, and Git exposure status; they never include the detected values. Open or reveal the file to review it yourself. Detection is heuristic and does not validate credentials or search Git history. The check reads UTF-8 project files up to 512 KiB, skips dependency/build directories and lockfiles, and reports when its scan limits or access errors leave coverage incomplete.
 
 **Actions** are confirmed first and logged in History:
 - Stop a process.
@@ -91,7 +94,7 @@ Live per-app traffic from `nettop`, plus sockets from `lsof`. Hostnames come fro
 ## Apps & Extensions
 
 - **Apps:** every app with its size *and* its data, flagged as unused, never opened, Intel-only, 32-bit, unsigned or damaged, duplicate, installer leftover, or runs in the background. A tree shows what each app installs: login items, agents, root daemons, privileged helpers, system extensions, app extensions.
-- **Extensions & Add-ons:** system extensions, virtual audio drivers, Quick Look generators, Spotlight importers, preference panes, internet plug-ins, screen savers, input methods and kernel extensions. Each is marked **dangling** (its app is gone), **obsolete** (macOS no longer loads it) or OK, and can be quarantined.
+- **Extensions & Add-ons:** system extensions, virtual audio drivers, Quick Look generators, Spotlight importers, preference panes, internet plug-ins, screen savers, input methods and kernel extensions. Each is marked **dangling** (its app is gone), **obsolete** (macOS no longer loads it) or OK. Folder-based add-ons can be quarantined. For a missing app extension, Prune attempts to remove its PlugInKit registration; when macOS refuses a missing bundle, it can disable stale registrations instead. It refuses to disable an identifier if another copy exists or is on a disconnected drive. System extensions must still be managed through macOS or their owning app.
 - **App Mover:** each app gets a verdict (movable, caution or stays) with reasons. Apps with system extensions, root helpers or App Store management stay put. A move works like this:
   1. Copies the bundle to the drive and checksums every file.
   2. Requires the copy to pass `codesign --verify --deep --strict`.
@@ -102,7 +105,11 @@ Live per-app traffic from `nettop`, plus sockets from `lsof`. Hostnames come fro
 
 ## Disks
 
-Overview shows every mounted disk with its own ring and an **Analyze** switch (also in Settings › Scanning). Scans cover the disks you pick: projects, build artifacts, large files, and that disk's Trash. Any disk can be opened in Disk Explorer or used as an Offload destination.
+Overview shows every mounted disk with its own ring and an **Analyze** switch (also in Settings › Scanning). Cleanup, Code Backup, and project security checks use the disks you pick. Project artifacts and large files on those disks are discovered directly even when Spotlight is disabled. The startup-disk ring counts only cleanup attributed to that disk. Read-only disks can be analyzed, but their cleanup actions are locked. Any disk can be opened in Disk Explorer or used as an Offload destination.
+
+## Duplicate Finder
+
+Run this separate scan from **Tools › Duplicate Finder** to compare files of at least 10 MB across selected locations. Prune groups candidates by size and sampled content, verifies matches with full SHA-256 hashes, and ignores symlinks and duplicate hard links. It rechecks both files before moving a chosen copy to the Trash. The scan caps full-content verification at 8 GiB and reports incomplete coverage; APFS clones and the Trash can make actual space recovered differ from file size.
 
 ## Code Backup
 
@@ -117,6 +124,8 @@ A "This Mac ↔ Remote" diagram shows each branch's state. Actions:
 - **Push.**
 - **Create a private GitHub repo** via `gh`, after confirmation.
 - **Fetch.**
+
+Remote comparisons use the last locally known remote state; run Fetch to refresh it. Linked worktrees are checked too, and Git errors are shown as unknown instead of treating them as proof of a backup. Credentials embedded in remote URLs are hidden in the interface.
 
 Offload and Disk Explorer warn before moving or trashing folders that contain unbacked-up source.
 
@@ -178,6 +187,8 @@ build/Prune.app/Contents/MacOS/Prune --security [--all]     # security check rep
 build/Prune.app/Contents/MacOS/Prune --code-backup          # backup status of every project (read-only)
 build/Prune.app/Contents/MacOS/Prune --apps                 # app inventory, move verdicts and add-ons (read-only)
 build/Prune.app/Contents/MacOS/Prune --selftest-security    # plants inert attack fixtures, checks detection and actions (34 checks)
+build/Prune.app/Contents/MacOS/Prune --selftest-features    # disk-selection, credential, duplicate and extension fixtures
+build/Prune.app/Contents/MacOS/Prune --selftest-volumes     # disposable fixture on the workspace's mounted external disk
 ```
 
 ## Code map
@@ -198,3 +209,4 @@ To add a cache or artifact rule, add an entry to `DevCacheScanner.rules()` or `A
 - Sizes are allocated bytes on disk. APFS clones and snapshots mean freed space can differ slightly.
 - Trashed items free space only once the Trash is emptied (the review sheet and menu bar say so).
 - Docker contents can only be analyzed while Docker is running.
+- Project discovery has a 14-level depth limit and a 1,500,000-directory limit; the scan reports when limits or unreadable folders make discovery incomplete.

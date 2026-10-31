@@ -177,7 +177,7 @@ struct SettingsView: View {
                     Toggle(isOn: Binding(get: { !s.excludedVolumes.contains(v.url.path) }, set: { on in
                         if on { s.excludedVolumes.removeAll { $0 == v.url.path } } else { s.excludedVolumes.append(v.url.path) }
                     })) { Label("\(v.name) · \(v.format) · \(Fmt.bytes(v.available)) free", systemImage: "externaldrive") }
-                    .disabled(!s.includeExternalVolumes || v.readOnly)
+                    .disabled(!s.includeExternalVolumes)
                     .padding(.leading, 16)
                 }
             } header: { Text("Where to look for projects") } footer: {

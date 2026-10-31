@@ -258,22 +258,10 @@ enum AppsCatalog {
                 }
             }
         }
-        // App extensions (pluginkit), only non-Apple ones whose host app is missing are interesting.
-        let pk = Shell.run("/usr/bin/pluginkit", ["-mAvv"], timeout: 20).stdout
-        var currentID = ""
-        for line in pk.split(separator: "\n").map(String.init) {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("     ") && !line.hasPrefix("      ") && !t.contains(" = ") { currentID = t.components(separatedBy: "(").first ?? t; continue }
-            guard t.hasPrefix("Path = ") else { continue }
-            let path = String(t.dropFirst(7))
-            guard !path.hasPrefix("/System/"), !currentID.hasPrefix("com.apple."), !path.contains("/Xcode.app/") else { continue }
-            let host = ProcessCatalog.outermostApp(path)
-            let present = host.map { FS.exists(URL(fileURLWithPath: $0)) } ?? FS.exists(URL(fileURLWithPath: path))
-            if !present {
-                out.append(AddOn(kind: .appExtension, name: currentID, path: path, bundleID: currentID, owner: nil, state: .dangling,
-                                 note: "Still registered with macOS, but its app is gone. Harmless; macOS forgets it after the next restart or `pluginkit` refresh."))
-            }
-        }
+        // A stale registration can survive even when its host app still exists after an update.
+        let pk = Shell.run("/usr/bin/pluginkit", ["-mADvv"], timeout: 20).stdout
+        let mounted = Set(SystemInfo.volumes().map(\.url.path))
+        out += PluginRegistry.staleAddOns(pk, mounted: mounted)
         return out.sorted { ($0.state, $0.kind.rawValue) > ($1.state, $1.kind.rawValue) }
     }
 }

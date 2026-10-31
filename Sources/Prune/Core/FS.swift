@@ -28,7 +28,8 @@ private final class BulkWalker {
     private let cond = NSCondition()
     private var stack: [(root: Int, path: String)] = []
     private var pending = 0
-    private var seenInodes = Set<UInt64>()
+    private struct InodeKey: Hashable { var root: Int; var device: Int32; var inode: UInt64 }
+    private var seenInodes = Set<InodeKey>()
     private let rootDevs: [Int32]
     var results: [SizeResult]
 
@@ -82,7 +83,7 @@ private final class BulkWalker {
 
             found.removeAll(keepingCapacity: true)
             var acc = local[job.root] ?? Acc()
-            scan(job.path, dev: rootDevs[job.root], buf: buf, bufSize: bufSize, acc: &acc, dirs: &found)
+            scan(job.path, root: job.root, dev: rootDevs[job.root], buf: buf, bufSize: bufSize, acc: &acc, dirs: &found)
             local[job.root] = acc
 
             cond.lock()
@@ -110,7 +111,7 @@ private final class BulkWalker {
     private static let fileLinkCount: UInt32 = 0x0000_0001, fileAllocSize: UInt32 = 0x0000_0004
     private static let vREG: UInt32 = 1, vDIR: UInt32 = 2
 
-    private func scan(_ path: String, dev: Int32, buf: UnsafeMutableRawPointer, bufSize: Int, acc: inout Acc, dirs: inout [String]) {
+    private func scan(_ path: String, root: Int, dev: Int32, buf: UnsafeMutableRawPointer, bufSize: Int, acc: inout Acc, dirs: inout [String]) {
         let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { acc.unreadable += 1; return }
         defer { close(fd) }
@@ -118,9 +119,20 @@ private final class BulkWalker {
         al.bitmapcount = 5
         al.commonattr = Self.cmnReturned | Self.cmnName | Self.cmnDevID | Self.cmnObjType | Self.cmnModTime | Self.cmnFileID
         al.fileattr = Self.fileLinkCount | Self.fileAllocSize
+        let startAcc = acc, startDirs = dirs.count
+        var insertedInodes: [InodeKey] = []
+        func restartWithFallback() {
+            acc = startAcc
+            if dirs.count > startDirs { dirs.removeSubrange(startDirs..<dirs.count) }
+            cond.lock(); insertedInodes.forEach { _ = seenInodes.remove($0) }; cond.unlock()
+            fallback(path, root: root, dev: dev, acc: &acc, dirs: &dirs)
+        }
         while true {
             let n = getattrlistbulk(fd, &al, buf, bufSize, 0)
-            if n < 0 { if errno == ENOTSUP || errno == EINVAL { fallback(path, dev: dev, acc: &acc, dirs: &dirs) } else { acc.unreadable += 1 }; return }
+            if n < 0 {
+                if errno == ENOTSUP || errno == EINVAL || errno == ENOSYS { restartWithFallback() } else { acc.unreadable += 1 }
+                return
+            }
             if n == 0 { return }
             var entry = buf
             for _ in 0..<n {
@@ -128,6 +140,7 @@ private final class BulkWalker {
                 var p = entry + 4
                 let common = p.loadUnaligned(as: UInt32.self)
                 let fileAttrs = p.loadUnaligned(fromByteOffset: 12, as: UInt32.self)
+                if common & (Self.cmnName | Self.cmnObjType) != (Self.cmnName | Self.cmnObjType) { restartWithFallback(); return }
                 p += 20 // attribute_set_t
                 var nameStart: UnsafeMutableRawPointer?
                 if common & Self.cmnName != 0 {
@@ -147,6 +160,11 @@ private final class BulkWalker {
                 if fileAttrs & Self.fileLinkCount != 0 { links = p.loadUnaligned(as: UInt32.self); p += 4 }
                 var alloc: Int64 = 0
                 if fileAttrs & Self.fileAllocSize != 0 { alloc = p.loadUnaligned(as: Int64.self); p += 8 }
+                if fileAttrs & Self.fileAllocSize == 0, type == Self.vREG, let ns = nameStart {
+                    let child = path + "/" + String(cString: ns.assumingMemoryBound(to: CChar.self))
+                    var st = stat()
+                    if lstat(child, &st) == 0 { alloc = Int64(st.st_blocks) * 512 }
+                }
 
                 if mtime > acc.newest { acc.newest = mtime }
                 if type == Self.vDIR {
@@ -154,12 +172,13 @@ private final class BulkWalker {
                         dirs.append(path + "/" + String(cString: ns.assumingMemoryBound(to: CChar.self)))
                     }
                 } else {
-                    if links > 1 {
-                        let key = (UInt64(UInt32(bitPattern: entryDev)) << 40) ^ fileID
+                    if links > 1 && fileID != 0 {
+                        let key = InodeKey(root: root, device: entryDev, inode: fileID)
                         cond.lock()
                         let fresh = seenInodes.insert(key).inserted
                         cond.unlock()
                         if !fresh { entry += length; continue }
+                        insertedInodes.append(key)
                     }
                     acc.bytes += alloc
                     acc.files += 1
@@ -170,7 +189,7 @@ private final class BulkWalker {
     }
 
     /// For file systems without getattrlistbulk support.
-    private func fallback(_ path: String, dev: Int32, acc: inout Acc, dirs: inout [String]) {
+    private func fallback(_ path: String, root: Int, dev: Int32, acc: inout Acc, dirs: inout [String]) {
         guard let entries = FS.list(path) else { acc.unreadable += 1; return }
         for e in entries {
             let child = path + "/" + e.name
@@ -180,6 +199,11 @@ private final class BulkWalker {
             if (st.st_mode & S_IFMT) == S_IFDIR {
                 if st.st_dev == dev { dirs.append(child) }
             } else {
+                if st.st_nlink > 1 {
+                    let key = InodeKey(root: root, device: st.st_dev, inode: st.st_ino)
+                    cond.lock(); let fresh = seenInodes.insert(key).inserted; cond.unlock()
+                    if !fresh { continue }
+                }
                 acc.bytes += Int64(st.st_blocks) * 512
                 acc.files += 1
             }
@@ -241,7 +265,19 @@ enum FS {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(ent.pointee.d_namlen) + 1) { String(cString: $0) }
             }
             if name == "." || name == ".." { continue }
-            let t = Int32(ent.pointee.d_type)
+            var t = Int32(ent.pointee.d_type)
+            // Some external file systems do not provide d_type in directory entries.
+            if t == DT_UNKNOWN {
+                var st = stat()
+                let child = (path as NSString).appendingPathComponent(name)
+                if lstat(child, &st) == 0 {
+                    switch st.st_mode & S_IFMT {
+                    case S_IFDIR: t = DT_DIR
+                    case S_IFLNK: t = DT_LNK
+                    default: t = DT_REG
+                    }
+                }
+            }
             out.append(Entry(name: name, isDir: t == DT_DIR, isLink: t == DT_LNK))
         }
         return out

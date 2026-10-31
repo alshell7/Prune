@@ -89,7 +89,7 @@ enum Quarantine {
         return entry
     }
 
-    static func restore(_ entry: QuarantineEntry) -> String? {
+    static func restore(_ entry: QuarantineEntry, reloadLaunchItem: Bool = true) -> String? {
         let fm = FileManager.default
         for item in entry.items {
             let dst = URL(fileURLWithPath: item.original)
@@ -116,7 +116,7 @@ enum Quarantine {
             } catch {
                 return "Couldn't restore \(FS.tildePath(dst)): \(error.localizedDescription)"
             }
-            if let label = item.wasLaunchItem, item.original.hasPrefix(FS.home.path) {
+            if reloadLaunchItem, let label = item.wasLaunchItem, item.original.hasPrefix(FS.home.path) {
                 Shell.run("/bin/launchctl", ["bootstrap", "gui/\(getuid())", item.original], timeout: 15)
                 _ = label
             }

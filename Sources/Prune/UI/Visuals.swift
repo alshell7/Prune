@@ -75,7 +75,7 @@ struct DiskHero: View {
                         .foregroundStyle(volume.usedFraction > 0.95 ? .red : .primary)
                     Text("free of \(Fmt.bytes(volume.total))").font(.caption).foregroundStyle(.secondary)
                     if recommended > 0 {
-                        Text("\u{2192} \(Fmt.bytes(volume.available + recommended)) after cleanup").font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                        Text("\u{2192} up to \(Fmt.bytes(min(volume.total, volume.available + recommended))) after cleanup & emptying Trash").font(.caption2.weight(.semibold)).foregroundStyle(.green)
                             .padding(.top, 4)
                     }
                 }
@@ -83,7 +83,7 @@ struct DiskHero: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(volume.name).font(.headline)
                 legend(.used, Int64(volume.used) - recommended - optional, "Apps, projects, data and the system")
-                legend(.recommended, recommended, "Safe to remove now")
+                legend(.recommended, recommended, "Recommended after review")
                 legend(.optional, optional, "Your call (active projects, models…)")
                 if volume.purgeable > 100_000_000 { legend(.purgeable, volume.purgeable, "macOS frees this on its own when needed") }
                 legend(.free, volume.availableStrict, "Available right now")
@@ -448,7 +448,8 @@ struct DiskTile: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
-                DiskRing(volume: volume, lineWidth: 7).frame(width: 52, height: 52)
+                DiskRing(volume: volume, reclaimable: model.summary.byVolume[volume.url.path]?.recommended ?? 0,
+                         optional: max(0, (model.summary.byVolume[volume.url.path]?.reclaimable ?? 0) - (model.summary.byVolume[volume.url.path]?.recommended ?? 0)), lineWidth: 7).frame(width: 52, height: 52)
                 Image(systemName: volume.isBoot ? "internaldrive.fill" : (volume.isInternal ? "internaldrive" : "externaldrive.fill"))
                     .font(.system(size: 15)).foregroundStyle(.secondary)
             }
@@ -459,11 +460,12 @@ struct DiskTile: View {
                         .padding(.horizontal, 5).padding(.vertical, 1).background(Color.secondary.opacity(0.12), in: Capsule()) }
                 }
                 Text("\(Fmt.bytes(volume.available)) free of \(Fmt.bytes(volume.total))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                if let size = model.summary.byVolume[volume.url.path]?.recommended, size > 0 {
+                    Text("\(Fmt.bytes(size)) recommended on this disk").font(.caption2).foregroundStyle(.green)
+                }
                 HStack(spacing: 10) {
                     if volume.isBoot {
                         Label("Always analyzed", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
-                    } else if volume.readOnly {
-                        Label("Read-only", systemImage: "lock").font(.caption2).foregroundStyle(.secondary)
                     } else {
                         Toggle("Analyze", isOn: Binding(get: { analyzed }, set: { on in
                             if on {
@@ -474,6 +476,7 @@ struct DiskTile: View {
                             }
                         }))
                         .toggleStyle(.switch).controlSize(.mini).font(.caption2)
+                        if volume.readOnly { Image(systemName: "lock").help("Read-only: findings can be reviewed but not cleaned.") }
                     }
                     Button("Explore") { model.showInExplorer(volume.url) }.buttonStyle(.link).font(.caption2)
                 }

@@ -4,6 +4,12 @@ import Foundation
 enum PruneMain {
     static func main() {
         let args = CommandLine.arguments
+        if args.contains("--selftest-features") {
+            exit(FeatureSelfTest.run())
+        }
+        if args.contains("--selftest-volumes") {
+            exit(VolumeSelfTest.run())
+        }
         if args.contains("--selftest-security") {
             exit(SecuritySelfTest.run())
         }

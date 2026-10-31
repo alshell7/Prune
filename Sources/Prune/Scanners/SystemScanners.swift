@@ -172,7 +172,7 @@ struct SystemJunkScanner: Scanner {
         }
 
         // Trash folders on other analyzed disks (/Volumes/X/.Trashes/<uid>).
-        for root in ctx.scanRoots where root.path.hasPrefix("/Volumes/") {
+        for root in ctx.externalScanRoots where ctx.volumes.contains(where: { $0.url.path == root.path }) {
             let t = root.appendingPathComponent(".Trashes/\(getuid())")
             let m = Sizer.measure(t)
             guard m.bytes >= ctx.minBytes else { continue }
@@ -378,13 +378,16 @@ struct LargeFilesScanner: Scanner {
         for root in ctx.scanRoots where !root.path.hasPrefix(FS.home.path) {
             paths += Spotlight.find("kMDItemFSSize >= \(threshold)", onlyIn: root.path, timeout: 40)
         }
+        // Many removable disks have Spotlight disabled or lack an index entirely.
+        progress.update("Checking selected external drives…")
+        paths += ctx.projects().largeFiles.map(\.path)
         let installed = ctx.apps.names
         for p in Set(paths) {
             if p.hasPrefix("/System/") || p.hasPrefix("/Library/") || p.contains(".app/") || p.hasPrefix("/Applications/")
                 || p.hasPrefix("/private/") || p.contains("/.Trash/") || p.contains("/node_modules/") || p.contains(".photoslibrary") { continue }
             let u = URL(fileURLWithPath: p)
             guard ctx.mayTouch(u), !ctx.settings.isExcluded(u) else { continue }
-            if p.hasPrefix("/Volumes/"), !ctx.scanRoots.contains(where: { FS.isAncestor($0.path, of: p) }) { continue }   // disk not selected
+            if p.hasPrefix("/Volumes/"), !ctx.includesExternalFile(p) { continue }
             var st = stat()
             guard lstat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { continue }
             let size = Int64(st.st_blocks) * 512

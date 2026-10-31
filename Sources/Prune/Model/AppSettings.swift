@@ -26,8 +26,21 @@ struct SettingsSnapshot {
     var excludedPaths: [String]
 
     func isExcluded(_ url: URL) -> Bool {
-        let p = url.path
-        return excludedPaths.contains { p == $0 || p.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
+        let p = url.standardizedFileURL.path
+        return (excludedPaths + excludedVolumes).contains {
+            let excluded = URL(fileURLWithPath: $0).standardizedFileURL.path
+            return p == excluded || FS.isAncestor(excluded, of: p)
+        }
+    }
+
+    /// All configured locations and enabled mounted disks. Keep nested roots: an ancestor may
+    /// deliberately skip a system folder, while an explicitly selected child should still be scanned.
+    func resolvedScanRoots(externalVolumes: [URL] = SystemInfo.externalVolumeRoots()) -> [URL] {
+        let candidates = scanRoots + (includeExternalVolumes ? externalVolumes : [])
+        var seen = Set<String>()
+        return candidates.map(\.standardizedFileURL).filter {
+            FS.isDir($0) && !isExcluded($0) && seen.insert($0.path).inserted
+        }
     }
 }
 

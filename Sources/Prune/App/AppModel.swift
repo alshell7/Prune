@@ -14,6 +14,7 @@ enum Route: Hashable {
     case taskManager
     case network
     case apps
+    case duplicates
     case watched
     case history
 }
@@ -26,6 +27,7 @@ struct ScanSummary {
     var byCategory: [Category: (size: Int64, recommended: Int, count: Int)] = [:]
     var safeQuickWins: [CleanupItem] = []
     var safeQuickWinSize: Int64 = 0
+    var byVolume: [String: (reclaimable: Int64, recommended: Int64)] = [:]
 }
 
 struct CleanProgress { var done: Int; var total: Int; var current: String }
@@ -51,6 +53,7 @@ final class AppModel {
     var timedOut: Set<String> = []
     var scanDuration: TimeInterval?
     var hasScanned = false
+    var scanCoverageWarning: String?
 
     var volumes: [VolumeInfo] = []
     var hasFDA = true
@@ -80,7 +83,7 @@ final class AppModel {
 
     var bootVolume: VolumeInfo? { volumes.first { $0.isBoot } ?? volumes.first }
 
-    func refreshVolumes() { volumes = SystemInfo.volumes() }
+    func refreshVolumes() { volumes = SystemInfo.volumes(); recomputeSummary() }
 
     private func tick() {
         refreshVolumes()
@@ -109,6 +112,7 @@ final class AppModel {
         scannerStatus = [:]
         finishedScanners = []
         timedOut = []
+        scanCoverageWarning = nil
         hasFDA = SystemInfo.hasFullDiskAccess()
         let started = Date()
         let snapshot = settings.snapshot
@@ -130,10 +134,11 @@ final class AppModel {
                 for await (name, result) in group {
                     finishedScanners.insert(name)
                     scannerStatus[name] = "Done"
-                    items = Self.finalize(items + result, minBytes: ctx.minBytes)
+                    items = Self.finalize(items + ctx.markReadOnly(result), minBytes: ctx.minBytes)
                 }
             }
             scannerStatus["Project index"] = nil
+            scanCoverageWarning = ctx.projectCoverageWarning()
             isScanning = false
             hasScanned = true
             scanDuration = Date().timeIntervalSince(started)
@@ -202,6 +207,7 @@ final class AppModel {
         let rec = actionable.filter { $0.recommendation == .recommended }
         s.recommended = Cleaner.effectiveSize(rec)
         s.recommendedCount = rec.count
+        s.byVolume = Self.volumeTotals(actionable, volumes: volumes)
         for r in Risk.allCases { s.byRisk[r] = Cleaner.effectiveSize(rec.filter { $0.risk == r }) }
         for c in Category.allCases {
             let inCat = items.filter { $0.category == c }
@@ -221,6 +227,23 @@ final class AppModel {
         s.safeQuickWinSize = Cleaner.effectiveSize(s.safeQuickWins)
         summary = s
         recomputeSelection()
+    }
+
+    /// Do not credit an external disk's cleanup to the startup disk. Items spanning multiple
+    /// volumes or without paths cannot be attributed safely to one volume.
+    nonisolated static func volumeTotals(_ items: [CleanupItem], volumes: [VolumeInfo]) -> [String: (reclaimable: Int64, recommended: Int64)] {
+        let roots = volumes.sorted { $0.url.path.count > $1.url.path.count }
+        var grouped: [String: [CleanupItem]] = [:]
+        for item in items where !item.paths.isEmpty {
+            let locations = item.paths.map { path in
+                roots.first { path.path == $0.url.path || FS.isAncestor($0.url.path, of: path.path) }?.url.path
+            }
+            guard let first = locations.first ?? nil, locations.allSatisfy({ $0 == first }) else { continue }
+            grouped[first, default: []].append(item)
+        }
+        return grouped.mapValues { list in
+            (Cleaner.effectiveSize(list), Cleaner.effectiveSize(list.filter { $0.recommendation == .recommended }))
+        }
     }
 
     private func recomputeSelection() {

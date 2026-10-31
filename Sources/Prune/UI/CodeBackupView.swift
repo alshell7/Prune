@@ -10,6 +10,7 @@ extension RepoStatus.Level {
         case .unpushed: .orange
         case .noRemote: Color(red: 0.95, green: 0.35, blue: 0.2)
         case .noGit: .red
+        case .unknown: .purple
         }
     }
 }
@@ -27,21 +28,18 @@ final class CodeBackupModel {
     var focused: String?
     var busy: String?
     var toast: (ok: Bool, text: String)?
-    var githubUser: String?
 
     var visible: [RepoStatus] { repos.filter { (showVendored || !$0.vendored) && (level == nil || $0.level == level) } }
     var own: [RepoStatus] { repos.filter { !$0.vendored } }
-    var atRisk: [RepoStatus] { own.filter { $0.level >= .unpushed } }
+    var atRisk: [RepoStatus] { own.filter { $0.level >= .uncommitted } }
 
     func refresh(settings: SettingsSnapshot) {
         guard !loading else { return }
         loading = true
         Task {
             let list = await AppModel.background { CodeBackup.analyze(settings: settings) { m in Task { @MainActor in CodeBackupModel.shared.status = m } } }
-            let user = await AppModel.background { CodeBackup.githubAccount() }
             withAnimation(.spring(duration: 0.5)) {
                 repos = list
-                githubUser = user
                 loading = false
                 checkedAt = Date()
                 if focused == nil { focused = visible.first?.id }
@@ -118,7 +116,7 @@ struct CodeBackupView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(cb.loading ? "Checking your projects…" : headline).font(.title2.weight(.semibold)).contentTransition(.numericText())
-                    Text(cb.loading ? cb.status : "Prune checks every project for code that exists only on this Mac: not in git, no remote, unpushed commits, local-only branches, stashes, uncommitted edits.")
+                    Text(cb.loading ? cb.status : "Prune checks projects for code that may not be backed up in Git: no repository or remote, unpushed commits, local-only branches, stashes and uncommitted edits.")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -135,7 +133,7 @@ struct CodeBackupView: View {
     private var headline: String {
         let n = cb.atRisk.count
         if cb.own.isEmpty { return "Code Backup" }
-        return n == 0 ? "All \(cb.own.count) projects have a copy elsewhere" : "\(n) of \(cb.own.count) projects exist only on this Mac"
+        return n == 0 ? "No local changes ahead of known remotes" : "\(n) of \(cb.own.count) projects need attention"
     }
 
     // MARK: List
@@ -208,6 +206,8 @@ struct CodeBackupView: View {
             if r.isGit && r.lastFetch == nil && !r.remotes.isEmpty { fact("arrow.down.circle", "Never fetched: run Fetch for accurate ahead/behind counts") }
             if r.stashes > 0 { fact("tray.full", "\(r.stashes) stash\(r.stashes == 1 ? "" : "es"), which never leave this Mac. Apply and commit them to back them up.") }
             if r.isWorktree { fact("square.on.square", "Linked worktree. Its commits live in the main repository.") }
+            if let error = r.analysisError { fact("exclamationmark.triangle", error) }
+            if r.detachedUnpushed > 0 { fact("arrow.triangle.branch", "Detached HEAD has unpushed commits. Create a branch before pushing them.") }
             if r.vendored { fact("shippingbox", "Looks like a dependency checkout. Its upstream is the backup.") }
         }
     }
@@ -226,10 +226,10 @@ struct CodeBackupView: View {
                         cb.run("Initialize git", on: r) { CodeBackup.initialize(r.path, ecosystems: ecos) }
                     } } label: { Label("Initialize Git", systemImage: "plus.circle") }
                 }
-                if r.isGit && r.remotes.isEmpty && r.hasCommits && !r.isWorktree {
-                    if CodeBackup.gh != nil, let user = cb.githubUser {
+                if r.level != .unknown && r.isGit && r.remotes.isEmpty && r.hasCommits && !r.isWorktree {
+                    if CodeBackup.gh != nil {
                         Button { confirm = PendingAction(title: "Create a private GitHub repo for \(r.name)?",
-                                                         message: "Creates a PRIVATE repository \u{201C}\(r.name)\u{201D} on your GitHub account (\(user)), sets it as origin, and pushes every local branch. Check that no secrets are committed first.", button: "Create & Push") {
+                                                         message: "Creates a PRIVATE repository \u{201C}\(r.name)\u{201D} on the account currently signed in to the GitHub CLI, sets it as origin, and pushes every local branch. Check that no secrets are committed first.", button: "Create & Push") {
                             cb.run("Create GitHub repo", on: r) { CodeBackup.createPrivateRepo(r) }
                         } } label: { Label("Create Private GitHub Repo", systemImage: "icloud.and.arrow.up") }
                             .buttonStyle(.borderedProminent)
@@ -237,7 +237,7 @@ struct CodeBackupView: View {
                         Text("Add a remote (e.g. `gh repo create --private --source . --push`) to back it up.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if r.isGit && !r.remotes.isEmpty && r.unpushedCommits > 0 {
+                if r.level != .unknown && r.isGit && !r.remotes.isEmpty && r.unpushedCommits > 0 {
                     let branches = r.branches.filter { $0.ahead > 0 || $0.localOnlyCommits > 0 }.map(\.name)
                     Button { confirm = PendingAction(title: "Push \(branches.count) branch\(branches.count == 1 ? "" : "es")?",
                                                      message: "Pushes \(branches.joined(separator: ", ")) to \(r.remotes.keys.contains("origin") ? "origin" : (r.remotes.keys.first ?? "the remote")) (\(r.remotes["origin"] ?? r.remotes.values.first ?? "")). Branches without an upstream get one.", button: "Push") {
@@ -245,7 +245,7 @@ struct CodeBackupView: View {
                     } } label: { Label("Push", systemImage: "arrow.up.circle") }
                         .buttonStyle(.borderedProminent)
                 }
-                if r.isGit && !r.remotes.isEmpty {
+                if r.level != .unknown && r.isGit && !r.remotes.isEmpty {
                     Button { cb.run("Fetch", on: r) { CodeBackup.fetch(r) } } label: { Label("Fetch", systemImage: "arrow.down.circle") }
                 }
                 Button { openTerminal(r.path) } label: { Label("Terminal", systemImage: "terminal") }
@@ -325,21 +325,24 @@ struct WhereCodeLivesDiagram: View {
                 }
             }
             VStack(spacing: 6) {
-                if !repo.isGit || repo.remotes.isEmpty {
+                if repo.level == .unknown {
+                    SyncArrow(state: .broken).frame(width: 74, height: 16)
+                    Text("status unknown").font(.caption2).foregroundStyle(.secondary)
+                } else if !repo.isGit || repo.remotes.isEmpty {
                     SyncArrow(state: .broken).frame(width: 74, height: 16)
                     Text(repo.isGit ? "nothing to sync to" : "not tracked").font(.caption2).foregroundStyle(.red)
-                } else if repo.unpushedCommits > 0 {
+                } else if repo.unpushedCommits > 0 || repo.detachedUnpushed > 0 || repo.modified + repo.untracked > 0 {
                     SyncArrow(state: .pending).frame(width: 74, height: 16)
-                    Text("\(repo.unpushedCommits) to push").font(.caption2.bold()).foregroundStyle(.orange)
+                    Text("Local changes").font(.caption2.bold()).foregroundStyle(.orange)
                 } else {
                     SyncArrow(state: .synced).frame(width: 74, height: 16)
-                    Text("in sync").font(.caption2).foregroundStyle(.green)
+                    Text("last known state").font(.caption2).foregroundStyle(.green)
                 }
             }
             .opacity(appear ? 1 : 0)
-            box(icon: repo.remotes.isEmpty ? "icloud.slash" : "icloud", title: repo.remotes.isEmpty ? "No remote" : "Remote",
-                subtitle: repo.remotes["origin"].map(shortRemote) ?? repo.remotes.values.first.map(shortRemote) ?? "Code isn't stored anywhere else",
-                tint: repo.remotes.isEmpty ? .red : .green, dashed: repo.remotes.isEmpty) {
+            box(icon: repo.remotes.isEmpty ? "icloud.slash" : "icloud", title: repo.level == .unknown ? "Remote unknown" : (repo.remotes.isEmpty ? "No remote" : "Remote"),
+                subtitle: repo.level == .unknown ? "Git could not check" : (repo.remotes["origin"].map(shortRemote) ?? repo.remotes.values.first.map(shortRemote) ?? "No Git remote is configured"),
+                tint: repo.level == .unknown ? .gray : (repo.remotes.isEmpty ? .red : .green), dashed: repo.remotes.isEmpty) {
                 ForEach(repo.branches.filter { $0.upstream != nil }.prefix(6), id: \.name) { b in
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.triangle.branch").font(.caption2)

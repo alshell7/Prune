@@ -16,10 +16,11 @@ enum CLI {
             let r = scanners[i].scan(ctx, ScanProgress { _ in })
             lock.lock(); results[i] = r; timings[i] = Date().timeIntervalSince(t); lock.unlock()
         }
-        let items = AppModel.finalize(results.flatMap { $0 }, minBytes: ctx.minBytes)
+        let items = AppModel.finalize(ctx.markReadOnly(results.flatMap { $0 }), minBytes: ctx.minBytes)
         let idx = ctx.projects()
 
         print("Prune scan · \(String(format: "%.1f", Date().timeIntervalSince(started)))s · \(idx.dirsVisited) dirs walked · \(idx.projects.count) projects · \(items.count) items")
+        if let warning = idx.coverageWarning { print("  \(warning)") }
         for (i, s) in scanners.enumerated() { print(String(format: "  %-20@ %5.1fs  %3d items", s.name as NSString, timings[i], results[i].count)) }
         let actionable = items.filter(\.countsAsReclaimable)
         print("Reclaimable: \(Fmt.bytes(Cleaner.effectiveSize(actionable)))  Recommended: \(Fmt.bytes(Cleaner.effectiveSize(actionable.filter { $0.recommendation == .recommended })))")

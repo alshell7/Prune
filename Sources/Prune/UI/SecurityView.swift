@@ -214,7 +214,7 @@ struct SecurityView: View {
                     withAnimation(.snappy) { sec.area = nil }
                 }
                 ForEach(SecurityArea.allCases, id: \.self) { a in
-                    let checked = a == .packages ? (sec.report.stats["npm packages"] ?? 0) : (a == .projects ? (sec.report.stats["projects"] ?? 0) : sec.count(a, issuesOnly: false))
+                    let checked = a == .packages ? (sec.report.stats["npm packages"] ?? 0) : (a == .projects ? (sec.report.stats["projects"] ?? 0) : (a == .credentials ? (sec.report.stats["credential files"] ?? 0) : sec.count(a, issuesOnly: false)))
                     AreaTile(title: a.rawValue, icon: a.icon, count: sec.count(a), total: checked, worst: sec.worst(a), selected: sec.area == a) {
                         withAnimation(.snappy) { sec.area = sec.area == a ? nil : a }
                     }
@@ -234,6 +234,7 @@ struct SecurityView: View {
                          ("shippingbox", "npm & Python packages: known-compromised versions, malicious install scripts, worms, typosquats"),
                          ("sparkles", "AI agents: Claude/Codex/Cursor hooks, MCP servers, third-party skills, hidden-text prompt injection"),
                          ("hammer", "Projects: auto-run VS Code tasks, git hooks and Xcode scripts used by fake job-interview repos"),
+                         ("key.fill", "Project credentials: environment files, possible hard-coded keys and exposure through git or public folders"),
                          ("globe", "Browser extensions installed outside the web store with broad access")], id: \.1) { icon, text in
                     Label(text, systemImage: icon).foregroundStyle(.secondary)
                 }
@@ -317,13 +318,16 @@ struct SecurityView: View {
                     DetailSection(title: "What this is", symbol: "info.circle", text: f.explanation)
                     if let l = f.legitNote { DetailSection(title: "Could be fine if…", symbol: "hand.thumbsup", text: l, tint: .green) }
                     DetailSection(title: "Recommendation", symbol: "lightbulb", text: f.recommendation, tint: f.severity >= .high ? .orange : .accentColor)
-                    if !f.actions.isEmpty {
+                    if !f.actions.isEmpty || !f.paths.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Actions").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             HStack(spacing: 8) {
                                 ForEach(f.actions, id: \.self) { a in
                                     Button { confirm = (a, f) } label: { Label(a.title, systemImage: a.symbol) }
                                         .buttonStyle(.bordered).tint(f.severity >= .high ? .red : nil)
+                                }
+                                if f.area == .credentials, let path = f.paths.first {
+                                    Button { NSWorkspace.shared.open(URL(fileURLWithPath: path)) } label: { Label("Open File", systemImage: "doc.text") }
                                 }
                                 if !f.paths.isEmpty { Button { Finder.reveal(f.paths.map { URL(fileURLWithPath: $0) }) } label: { Label("Reveal", systemImage: "magnifyingglass") } }
                             }

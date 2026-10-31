@@ -8,10 +8,16 @@ struct OverviewView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 if !model.hasFDA { fdaBanner }
+                if let warning = model.scanCoverageWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.callout).foregroundStyle(.orange).padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+                }
                 if let boot = model.bootVolume {
                     Card {
-                        DiskHero(volume: boot, recommended: model.summary.recommended,
-                                 optional: max(0, model.summary.reclaimable - model.summary.recommended))
+                        DiskHero(volume: boot, recommended: model.summary.byVolume[boot.url.path]?.recommended ?? 0,
+                                 optional: max(0, (model.summary.byVolume[boot.url.path]?.reclaimable ?? 0) - (model.summary.byVolume[boot.url.path]?.recommended ?? 0)))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -160,7 +166,7 @@ struct OverviewView: View {
             StatusTile(icon: cb.atRisk.isEmpty ? "checkmark.icloud.fill" : "exclamationmark.icloud.fill",
                        tint: cb.checkedAt == nil ? .accentColor : (cb.atRisk.isEmpty ? .green : .orange),
                        title: "Code Backup",
-                       value: cb.loading ? "Checking…" : (cb.checkedAt == nil ? "Not checked yet" : (cb.atRisk.isEmpty ? "All projects backed up" : "\(cb.atRisk.count) project\(cb.atRisk.count == 1 ? "" : "s") only on this Mac")),
+                       value: cb.loading ? "Checking…" : (cb.checkedAt == nil ? "Not checked yet" : (cb.atRisk.isEmpty ? "No local changes ahead" : "\(cb.atRisk.count) project\(cb.atRisk.count == 1 ? "" : "s") need attention")),
                        detail: cb.checkedAt == nil ? "" : "\(cb.own.filter { $0.level == .uncommitted }.count) with uncommitted edits",
                        busy: cb.loading) { model.open(.codeBackup) }
         }

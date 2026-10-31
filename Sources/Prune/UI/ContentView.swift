@@ -23,6 +23,7 @@ struct ContentView: View {
                 case .taskManager: TaskManagerView()
                 case .network: NetworkView()
                 case .apps: AppsView()
+                case .duplicates: DuplicatesView()
                 case .watched: WatchedView()
                 case .history: HistoryView()
                 }
@@ -60,6 +61,7 @@ struct ContentView: View {
                 case "taskManager": model.route = .taskManager
                 case "network": model.route = .network
                 case "apps": model.route = .apps
+                case "duplicates": model.route = .duplicates
                 case "watched": model.route = .watched
                 case "history": model.route = .history
                 default: model.route = Category(rawValue: r).map { .category($0) } ?? .overview
@@ -126,6 +128,7 @@ struct Sidebar: View {
                     Label("System Data", systemImage: "internaldrive").tag(Route.systemData)
                     Label("Offload to Drive", systemImage: "externaldrive.badge.plus").tag(Route.offload)
                     Label("Disk Explorer", systemImage: "square.grid.3x3.square").tag(Route.explorer)
+                    Label("Duplicate Finder", systemImage: "doc.on.doc").tag(Route.duplicates)
                     Label("Watched Folders", systemImage: "eye").tag(Route.watched)
                     Label("History", systemImage: "clock.arrow.circlepath").tag(Route.history)
                 }
@@ -143,13 +146,14 @@ struct SidebarDiskFooter: View {
 
     var body: some View {
         if let boot = model.bootVolume {
+            let recommended = model.summary.byVolume[boot.url.path]?.recommended ?? 0
             Button { model.open(.overview) } label: {
                 HStack(spacing: 10) {
-                    DiskRing(volume: boot, reclaimable: model.summary.recommended, lineWidth: 5).frame(width: 30, height: 30)
+                    DiskRing(volume: boot, reclaimable: recommended, lineWidth: 5).frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("\(Fmt.bytes(boot.available)) free").font(.caption.weight(.semibold).monospacedDigit())
                             .contentTransition(.numericText())
-                        Text(model.summary.recommended > 0 ? "+\(Fmt.bytes(model.summary.recommended)) recommended" : boot.name)
+                        Text(recommended > 0 ? "+\(Fmt.bytes(recommended)) recommended" : boot.name)
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)

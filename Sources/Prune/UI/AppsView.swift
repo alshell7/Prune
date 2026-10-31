@@ -59,6 +59,23 @@ final class AppsModel {
         withAnimation(.snappy) { toast = (ok, t) }
         Task { try? await Task.sleep(for: .seconds(6)); withAnimation { if toast?.text == t { toast = nil } } }
     }
+
+    func removeStaleRegistration(_ addOn: AddOn) {
+        Task {
+            let result = await AppModel.background { PluginRegistry.removeStale(addOn) }
+            let success = result.0 != nil
+            AuditLog.append([CleanOutcome(title: addOn.name, category: "Extensions", paths: [addOn.path], size: 0,
+                                          method: "PlugInKit registration", success: success, message: result.1)])
+            flash(success, result.1)
+            if case .removed? = result.0 {
+                addOns.removeAll { $0.id == addOn.id }
+                focusedAddOn = addOns.first?.id
+            } else if case .disabled? = result.0, let i = addOns.firstIndex(where: { $0.id == addOn.id }) {
+                addOns[i].active = false
+                addOns[i].note = "This missing extension path is disabled. macOS may eventually remove the registration."
+            }
+        }
+    }
 }
 
 extension AppEntry.Flag {
@@ -405,12 +422,19 @@ struct AppsView: View {
                     FlowChain(nodes: [
                         ChainNode(kind: "Installed by", label: x.owner ?? "Unknown (app gone)", detail: "", risky: x.owner == nil),
                         ChainNode(kind: x.kind.rawValue, label: x.name, detail: x.bundleID, risky: x.state != .ok),
-                        ChainNode(kind: "Loaded into", label: loadedInto(x.kind), detail: x.active ? "active" : "inactive", risky: x.state == .dangling && x.active),
+                        ChainNode(kind: "Loaded into", label: loadedInto(x.kind), detail: x.kind == .appExtension ? (x.active ? "registered" : "disabled") : (x.active ? "active" : "inactive"), risky: x.state == .dangling && x.active),
                     ]).id(x.id)
                     DetailSection(title: "What Prune found", symbol: "info.circle", text: x.note, tint: x.state == .ok ? .secondary : x.state.tint)
                     DetailSection(title: "Location", symbol: "folder", text: x.path, mono: true)
                     if let s = x.signer { DetailSection(title: "Signed by", symbol: "signature", text: s.label) }
                     HStack(spacing: 8) {
+                        if x.kind == .appExtension && x.state == .dangling && x.active {
+                            Button {
+                                confirm = ("Remove stale registration?", "Prune will ask macOS to remove this missing extension's registration. If macOS cannot remove a missing bundle, Prune will disable all stale registrations with the same identifier instead. It will refuse if another copy exists or its drive is disconnected.", "Continue", {
+                                    am.removeStaleRegistration(x)
+                                })
+                            } label: { Label("Remove stale registration…", systemImage: "minus.circle") }
+                        }
                         if x.removable && x.state != .ok {
                             Button {
                                 confirm = ("Quarantine \(x.name)?", "Moves it into Prune's Quarantine (restorable from Security). \(x.needsAdmin ? "Needs your administrator password. " : "")Some add-ons only stop loading after a restart.", "Quarantine", {

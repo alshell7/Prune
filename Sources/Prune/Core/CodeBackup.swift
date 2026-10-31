@@ -3,7 +3,7 @@ import Foundation
 /// Is each project's source code safe somewhere other than this Mac?
 struct RepoStatus: Identifiable, Hashable {
     enum Level: Int, Comparable, CaseIterable {
-        case backedUp = 0, uncommitted, unpushed, noRemote, noGit
+        case backedUp = 0, uncommitted, unpushed, noRemote, noGit, unknown
         static func < (a: Level, b: Level) -> Bool { a.rawValue < b.rawValue }
 
         var title: String {
@@ -13,15 +13,17 @@ struct RepoStatus: Identifiable, Hashable {
             case .unpushed: "Not pushed"
             case .noRemote: "No remote"
             case .noGit: "Not in git"
+            case .unknown: "Could not check"
             }
         }
         var blurb: String {
             switch self {
-            case .backedUp: "Everything is committed and pushed."
-            case .uncommitted: "Edits that aren't committed exist only in this folder."
-            case .unpushed: "Commits, branches or stashes exist only on this Mac."
-            case .noRemote: "Git history exists, but only on this Mac."
-            case .noGit: "No version control. This folder is the only copy."
+            case .backedUp: "No local changes are ahead of the last known remote state."
+            case .uncommitted: "Git cannot confirm uncommitted edits are backed up."
+            case .unpushed: "Some commits, branches or stashes are not on a known remote."
+            case .noRemote: "Git history exists, but no remote is configured."
+            case .noGit: "No Git repository was found. Check whether another copy exists."
+            case .unknown: "Git could not verify this project's backup status."
             }
         }
         var symbol: String {
@@ -31,6 +33,7 @@ struct RepoStatus: Identifiable, Hashable {
             case .unpushed: "icloud.and.arrow.up"
             case .noRemote: "externaldrive.badge.xmark"
             case .noGit: "exclamationmark.triangle"
+            case .unknown: "questionmark.circle"
             }
         }
     }
@@ -54,20 +57,24 @@ struct RepoStatus: Identifiable, Hashable {
     var lastFetch: Date?
     var sourceBytes: Int64 = 0
     var vendored = false
+    var analysisError: String?
+    var detachedUnpushed = 0
 
     var name: String { path.lastPathComponent }
     var unpushedCommits: Int { branches.reduce(0) { $0 + $1.ahead + $1.localOnlyCommits } }
 
     var headline: String {
         var parts: [String] = []
+        if level == .unknown { return "Could not check git status" }
         if !isGit { return "No git repository · \(Fmt.bytes(sourceBytes)) of source" }
         if remotes.isEmpty { parts.append(hasCommits ? "No remote" : "No commits yet") }
         if unpushedCommits > 0 { parts.append("\(unpushedCommits) commit\(unpushedCommits == 1 ? "" : "s") not pushed") }
         let localOnly = branches.filter { $0.upstream == nil && $0.localOnlyCommits > 0 }.count
         if localOnly > 0 { parts.append("\(localOnly) local-only branch\(localOnly == 1 ? "" : "es")") }
         if stashes > 0 { parts.append("\(stashes) stash\(stashes == 1 ? "" : "es")") }
+        if detachedUnpushed > 0 { parts.append("\(detachedUnpushed) unpushed detached HEAD commit\(detachedUnpushed == 1 ? "" : "s")") }
         if modified + untracked > 0 { parts.append("\(modified + untracked) uncommitted file\(modified + untracked == 1 ? "" : "s")") }
-        return parts.isEmpty ? "Clean and pushed" : parts.joined(separator: " · ")
+        return parts.isEmpty ? "Clean; no commits ahead of known remotes" : parts.joined(separator: " · ")
     }
 }
 
@@ -76,9 +83,10 @@ enum CodeBackup {
     static let vendoredMarkers = ["/third_party/", "/third-party/", "/vendor/", "/external/", "/deps/", "/.tmp/", "/tmp/", "/node_modules/",
                                   "/checkouts/", "/SourcePackages/", "/.build/", "/Pods/", "/Carthage/"]
 
-    static func analyze(settings: SettingsSnapshot, progress: @escaping (String) -> Void) -> [RepoStatus] {
+    static func analyze(settings: SettingsSnapshot, externalVolumes: [URL]? = nil, progress: @escaping (String) -> Void) -> [RepoStatus] {
         progress("Finding projects…")
-        let idx = ProjectIndex.build(roots: settings.scanRoots.filter(FS.isDir), settings: settings) { _ in }
+        let roots = externalVolumes.map { settings.resolvedScanRoots(externalVolumes: $0) } ?? settings.resolvedScanRoots()
+        let idx = ProjectIndex.build(roots: roots, settings: settings) { _ in }
         // Git checkouts, plus top-level projects that aren't inside any repository.
         var targets: [(URL, ProjectInfo.GitKind)] = idx.projects.values.filter { $0.gitKind != .none }.map { ($0.root, $0.gitKind) }
         let gitPaths = targets.map(\.0.path)
@@ -109,23 +117,32 @@ enum CodeBackup {
 
     static func gitStatus(_ url: URL, linked: Bool) -> RepoStatus {
         var s = RepoStatus(path: url, level: .backedUp, isGit: true, isWorktree: linked)
-        for line in Git.run(url, ["remote", "-v"]).stdout.split(separator: "\n") {
+        let remoteResult = Git.run(url, ["remote", "-v"])
+        let statusResult = Git.run(url, ["status", "--porcelain=v1", "--untracked-files=normal"], timeout: 60)
+        guard remoteResult.ok, statusResult.ok else {
+            s.level = .unknown
+            s.analysisError = "Git could not read this repository. Check permissions, the worktree link and Git's safe.directory settings."
+            return s
+        }
+        for line in remoteResult.stdout.split(separator: "\n") {
             let cols = line.split(whereSeparator: { $0 == "\t" || $0 == " " }).map(String.init)
-            if cols.count >= 2 { s.remotes[cols[0]] = cols[1] }
+            if cols.count >= 2 { s.remotes[cols[0]] = sanitizedRemote(cols[1]) }
         }
         s.hasCommits = Git.run(url, ["rev-parse", "--verify", "-q", "HEAD"]).ok
         s.currentBranch = Git.run(url, ["branch", "--show-current"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        for line in Git.run(url, ["status", "--porcelain=v1", "--untracked-files=normal"], timeout: 60).stdout.split(separator: "\n") {
+        for line in statusResult.stdout.split(separator: "\n") {
             if line.hasPrefix("??") { s.untracked += 1 } else { s.modified += 1 }
         }
         if let ct = Double(Git.run(url, ["log", "-1", "--format=%ct"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) {
             s.lastCommit = Date(timeIntervalSince1970: ct)
         }
-        if !linked {
+        do {
             s.stashes = Git.run(url, ["stash", "list"]).stdout.split(separator: "\n").count
-            let gitDir = url.appendingPathComponent(".git")
+            let gitDir = (linked ? Git.resolveGitDir(worktree: url).flatMap(Git.mainRepo(fromGitDir:))?.appendingPathComponent(".git") : nil) ?? url.appendingPathComponent(".git")
             s.lastFetch = FS.mtime(gitDir.appendingPathComponent("FETCH_HEAD"))
-            let refs = Git.run(url, ["for-each-ref", "--format=%(refname:short)%09%(upstream:short)%09%(upstream:track)", "refs/heads"]).stdout
+            let refsResult = Git.run(url, ["for-each-ref", "--format=%(refname:short)%09%(upstream:short)%09%(upstream:track)", "refs/heads"])
+            guard refsResult.ok else { s.level = .unknown; s.analysisError = "Git could not read local branches."; return s }
+            let refs = refsResult.stdout
             for line in refs.split(separator: "\n") {
                 let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
                 guard let name = cols.first, !name.isEmpty else { continue }
@@ -136,19 +153,42 @@ enum CodeBackup {
                 var localOnly = 0
                 if upstream == nil || track.contains("gone") {
                     let args = s.remotes.isEmpty ? ["rev-list", "--count", name] : ["rev-list", "--count", name, "--not", "--remotes"]
-                    localOnly = Int(Git.run(url, args).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                    let count = Git.run(url, args)
+                    guard count.ok, let n = Int(count.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                        s.level = .unknown; s.analysisError = "Git could not compare a local branch with its remotes."; return s
+                    }
+                    localOnly = n
                 }
                 s.branches.append(.init(name: name, upstream: upstream, ahead: ahead, behind: behind, localOnlyCommits: localOnly, gone: track.contains("gone")))
             }
         }
-        if s.remotes.isEmpty && !linked { s.level = .noRemote }
-        else if s.unpushedCommits > 0 || s.stashes > 0 { s.level = .unpushed }
+        if s.hasCommits && (s.currentBranch ?? "").isEmpty && !s.remotes.isEmpty {
+            let count = Git.run(url, ["rev-list", "--count", "HEAD", "--not", "--remotes"])
+            guard count.ok, let n = Int(count.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                s.level = .unknown; s.analysisError = "Git could not compare detached HEAD with its remotes."; return s
+            }
+            s.detachedUnpushed = n
+        }
+        if s.remotes.isEmpty { s.level = .noRemote }
+        else if s.unpushedCommits > 0 || s.stashes > 0 || s.detachedUnpushed > 0 { s.level = .unpushed }
         else if s.modified + s.untracked > 0 { s.level = .uncommitted }
         if s.level != .backedUp || !linked {
             s.sourceBytes = Int64(Git.run(url, ["count-objects", "-v"]).stdout.split(separator: "\n")
                 .first { $0.hasPrefix("size-pack:") }.flatMap { Int64($0.split(separator: " ").last ?? "") }.map { $0 * 1024 } ?? 0)
         }
         return s
+    }
+
+    /// Remote URLs are displayed, but may contain embedded credentials or query tokens.
+    static func sanitizedRemote(_ remote: String) -> String {
+        let withoutQuery = remote.components(separatedBy: CharacterSet(charactersIn: "?#")).first ?? ""
+        if var components = URLComponents(string: withoutQuery), components.host != nil {
+            components.user = nil; components.password = nil
+            return components.string ?? "Remote URL"
+        }
+        // scp-style remotes have no URL host, and may also put a token before '@'.
+        if let at = withoutQuery.firstIndex(of: "@") { return String(withoutQuery[withoutQuery.index(after: at)...]) }
+        return withoutQuery
     }
 
     /// One-line warning when a folder holds source code that isn't safe elsewhere (used before moving or trashing).
@@ -163,7 +203,7 @@ enum CodeBackup {
                 return
             }
             if !names.isDisjoint(with: Set(ProjectIndex.markerFiles.keys)) {
-                findings.append("\(dir.lastPathComponent): not in git, so this is the only copy")
+                findings.append("\(dir.lastPathComponent): not in git; check for another copy")
                 return
             }
             guard depth < 3 else { return }
@@ -173,7 +213,7 @@ enum CodeBackup {
         }
         if FS.isDir(url) { check(url, depth: 0) }
         guard !findings.isEmpty else { return nil }
-        return "Contains source code that isn't backed up: " + findings.joined(separator: "; ") + "."
+        return "Contains source code whose Git backup could not be confirmed: " + findings.joined(separator: "; ") + "."
     }
 
     // MARK: Actions (each confirmed in the UI)
@@ -213,12 +253,6 @@ enum CodeBackup {
     }
 
     static var gh: String? { Shell.which("gh") }
-
-    static func githubAccount() -> String? {
-        guard let gh else { return nil }
-        let r = Shell.run(gh, ["api", "user", "--jq", ".login"], timeout: 15)
-        return r.ok ? r.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-    }
 
     static func createPrivateRepo(_ s: RepoStatus) -> (Bool, String) {
         guard let gh else { return (false, "GitHub CLI (gh) isn't installed.") }
