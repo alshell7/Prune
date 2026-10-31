@@ -211,15 +211,20 @@ enum AppsCatalog {
 
         // System extensions (network filters, drivers, endpoint security).
         let sx = Shell.run("/usr/bin/systemextensionsctl", ["list"], timeout: 10).stdout
+        let records = SystemExtensions.records()
         for line in sx.split(separator: "\n") where line.contains("[activated") || line.contains("[terminated") || line.contains("[uninstall") {
             let cols = line.split(separator: "\t").map(String.init)
             guard cols.count >= 5 else { continue }
             let bid = cols[3].components(separatedBy: " (").first ?? cols[3]
-            let owner = apps.first { app in app.components.contains { $0.kind == .systemExtension && $0.path.contains(bid) } }?.name ?? ownerFor(bid)
+            let record = records.first { $0.identifier == bid }
+            // macOS records which app installed it; that app's presence is the ground truth.
+            let container = record?.containerApp.flatMap { FS.exists(URL(fileURLWithPath: $0)) ? URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent : nil }
+            let owner = container ?? (record == nil ? (apps.first { app in app.components.contains { $0.kind == .systemExtension && $0.path.contains(bid) } }?.name ?? ownerFor(bid)) : nil)
             let active = line.contains("activated enabled")
+            let gone = record?.containerApp.map { "Installed by \(($0 as NSString).lastPathComponent), which is no longer on this Mac. " } ?? ""
             out.append(AddOn(kind: .systemExtension, name: cols[4], path: bid, bundleID: bid, owner: owner,
                              state: owner == nil ? .dangling : .ok,
-                             note: owner == nil ? "Still \(active ? "active" : "installed"), but no installed app owns it. Driver and network extensions run with deep system access."
+                             note: owner == nil ? gone + "Still \(active ? "active" : "installed (disabled)"). \(record?.kindLabel ?? "System extension")s run with deep system access."
                                                 : "Belongs to \(owner!). Team \(cols[2]).",
                              signer: nil, active: active))
         }
@@ -262,6 +267,7 @@ enum AppsCatalog {
         let pk = Shell.run("/usr/bin/pluginkit", ["-mADvv"], timeout: 20).stdout
         let mounted = Set(SystemInfo.volumes().map(\.url.path))
         out += PluginRegistry.staleAddOns(pk, mounted: mounted)
+        out += PluginRegistry.installedThirdParty(Shell.run("/usr/bin/pluginkit", ["-mAvv"], timeout: 20).stdout)
         return out.sorted { ($0.state, $0.kind.rawValue) > ($1.state, $1.kind.rawValue) }
     }
 }

@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @State private var guide = ModuleGuide.shared
 
     var body: some View {
         @Bindable var model = model
@@ -24,13 +25,31 @@ struct ContentView: View {
                 case .network: NetworkView()
                 case .apps: AppsView()
                 case .duplicates: DuplicatesView()
+                case .secrets: SecretsView()
+                case .doctor: DoctorView()
+                case .maintenance: MaintenanceView()
+                case .timeline: SpaceTimelineView()
                 case .watched: WatchedView()
                 case .history: HistoryView()
                 }
             }
+            .id(model.route?.guideKey ?? "overview")
+            .transition(.opacity.combined(with: .offset(y: 8)))
+            .animation(.snappy(duration: 0.28), value: model.route)
             .frame(minWidth: 640)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                let route = model.route ?? .overview
+                if guide.isVisible(route) { ModuleIntroCard(route: route).id(route.guideKey) }
+            }
         }
+        .sheet(isPresented: $guide.showTour) { WelcomeTour() }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button { guide.toggle(model.route ?? .overview) } label: {
+                    Label("How it works", systemImage: guide.isVisible(model.route ?? .overview) ? "questionmark.circle.fill" : "questionmark.circle")
+                }
+                .help("Show how this module works")
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 if model.isScanning {
                     ProgressView().controlSize(.small)
@@ -62,6 +81,10 @@ struct ContentView: View {
                 case "network": model.route = .network
                 case "apps": model.route = .apps
                 case "duplicates": model.route = .duplicates
+                case "secrets": model.route = .secrets
+                case "doctor": model.route = .doctor
+                case "maintenance": model.route = .maintenance
+                case "timeline": model.route = .timeline
                 case "watched": model.route = .watched
                 case "history": model.route = .history
                 default: model.route = Category(rawValue: r).map { .category($0) } ?? .overview
@@ -118,17 +141,21 @@ struct Sidebar: View {
                     }
                 }
                 Section("Protect") {
-                    Label("Security", systemImage: "shield.lefthalf.filled").tag(Route.security)
-                    Label("Code Backup", systemImage: "externaldrive.badge.checkmark").tag(Route.codeBackup)
-                Label("Task Manager", systemImage: "cpu").tag(Route.taskManager)
-                Label("Network", systemImage: "network").tag(Route.network)
-                Label("Apps & Extensions", systemImage: "square.grid.3x3.topleft.filled").tag(Route.apps)
+                    badged("Security", "shield.lefthalf.filled", SecurityModel.shared.issues.filter { $0.severity >= .medium }.count, .orange).tag(Route.security)
+                    badged("Secrets", "key.fill", SecretsModel.shared.report.issues.filter { $0.severity >= .high }.count, .red).tag(Route.secrets)
+                    badged("Code Backup", "externaldrive.badge.checkmark", CodeBackupModel.shared.atRisk.count, .orange).tag(Route.codeBackup)
+                    Label("Task Manager", systemImage: "cpu").tag(Route.taskManager)
+                    Label("Network", systemImage: "network").tag(Route.network)
+                    Label("Apps & Extensions", systemImage: "square.grid.3x3.topleft.filled").tag(Route.apps)
                 }
                 Section("Tools") {
                     Label("System Data", systemImage: "internaldrive").tag(Route.systemData)
                     Label("Offload to Drive", systemImage: "externaldrive.badge.plus").tag(Route.offload)
                     Label("Disk Explorer", systemImage: "square.grid.3x3.square").tag(Route.explorer)
                     Label("Duplicate Finder", systemImage: "doc.on.doc").tag(Route.duplicates)
+                    badged("Project Doctor", "stethoscope", DoctorModel.shared.issues.filter { $0.level == .broken }.count, .pink).tag(Route.doctor)
+                    Label("Maintenance", systemImage: "wrench.and.screwdriver").tag(Route.maintenance)
+                    Label("Space Timeline", systemImage: "chart.xyaxis.line").tag(Route.timeline)
                     Label("Watched Folders", systemImage: "eye").tag(Route.watched)
                     Label("History", systemImage: "clock.arrow.circlepath").tag(Route.history)
                 }
@@ -137,6 +164,22 @@ struct Sidebar: View {
             // A real footer (not an overlay), so it never covers the last sidebar rows.
             SidebarDiskFooter()
         }
+    }
+}
+
+extension Sidebar {
+    func badged(_ title: String, _ symbol: String, _ count: Int, _ tint: Color) -> some View {
+        HStack {
+            Label(title, systemImage: symbol)
+            Spacer()
+            if count > 0 {
+                Text("\(count)").font(.caption2.weight(.bold).monospacedDigit()).foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 1).background(tint, in: Capsule())
+                    .contentTransition(.numericText())
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: count)
     }
 }
 

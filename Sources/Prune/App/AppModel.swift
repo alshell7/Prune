@@ -15,6 +15,10 @@ enum Route: Hashable {
     case network
     case apps
     case duplicates
+    case secrets
+    case doctor
+    case maintenance
+    case timeline
     case watched
     case history
 }
@@ -57,7 +61,9 @@ final class AppModel {
 
     var volumes: [VolumeInfo] = []
     var hasFDA = true
-    var route: Route? = .overview
+    var route: Route? = .overview { didSet { if let route { ModuleGuide.noteVisit(route) } } }
+    /// Mount path of the disk the cleanup views focus on; nil means every analyzed disk.
+    var diskScope: String? { didSet { recomputeSummary() } }
     var focusedItemID: String?
     var explorerPath: URL?
 
@@ -83,7 +89,32 @@ final class AppModel {
 
     var bootVolume: VolumeInfo? { volumes.first { $0.isBoot } ?? volumes.first }
 
-    func refreshVolumes() { volumes = SystemInfo.volumes(); recomputeSummary() }
+    func refreshVolumes() {
+        volumes = SystemInfo.volumes()
+        if let d = diskScope, !volumes.contains(where: { $0.url.path == d }) { diskScope = nil }
+        SpaceHistory.shared.record(volumes)
+        recomputeSummary()
+    }
+
+    var scopeVolume: VolumeInfo? { diskScope.flatMap { d in volumes.first { $0.url.path == d } } }
+
+    /// The mounted disk a path lives on (deepest mount point wins).
+    func volume(for url: URL) -> VolumeInfo? {
+        volumes.filter { url.path == $0.url.path || FS.isAncestor($0.url.path, of: url.path) }.max { $0.url.path.count < $1.url.path.count }
+    }
+
+    func inScope(_ url: URL) -> Bool {
+        guard let d = diskScope else { return true }
+        return volume(for: url)?.url.path == d
+    }
+
+    func inScope(_ item: CleanupItem) -> Bool {
+        guard diskScope != nil else { return true }
+        return !item.paths.isEmpty && item.paths.allSatisfy { inScope($0) }
+    }
+
+    /// Items on the disk in focus.
+    var scopedItems: [CleanupItem] { diskScope == nil ? items : items.filter { inScope($0) } }
 
     private func tick() {
         refreshVolumes()
@@ -139,6 +170,7 @@ final class AppModel {
             }
             scannerStatus["Project index"] = nil
             scanCoverageWarning = ctx.projectCoverageWarning()
+            if ctx.hasProjectIndex { ProjectIndex.remember(ctx.projects(), settings: snapshot) }
             isScanning = false
             hasScanned = true
             scanDuration = Date().timeIntervalSince(started)
@@ -202,12 +234,13 @@ final class AppModel {
 
     private func recomputeSummary() {
         var s = ScanSummary()
+        let items = scopedItems
         let actionable = items.filter(\.countsAsReclaimable)
         s.reclaimable = Cleaner.effectiveSize(actionable)
         let rec = actionable.filter { $0.recommendation == .recommended }
         s.recommended = Cleaner.effectiveSize(rec)
         s.recommendedCount = rec.count
-        s.byVolume = Self.volumeTotals(actionable, volumes: volumes)
+        s.byVolume = Self.volumeTotals(self.items.filter(\.countsAsReclaimable), volumes: volumes)
         for r in Risk.allCases { s.byRisk[r] = Cleaner.effectiveSize(rec.filter { $0.risk == r }) }
         for c in Category.allCases {
             let inCat = items.filter { $0.category == c }
@@ -251,7 +284,7 @@ final class AppModel {
         selectedSize = Cleaner.effectiveSize(selectedItems)
     }
 
-    func items(in c: Category) -> [CleanupItem] { items.filter { $0.category == c } }
+    func items(in c: Category) -> [CleanupItem] { scopedItems.filter { $0.category == c } }
 
     func toggle(_ item: CleanupItem) {
         guard item.isActionable else { return }
@@ -260,7 +293,7 @@ final class AppModel {
 
     func selectRecommended(in c: Category? = nil) {
         var s = selection
-        for i in items where i.isActionable && i.recommendation == .recommended && (c == nil || i.category == c) { s.insert(i.id) }
+        for i in scopedItems where i.isActionable && i.recommendation == .recommended && (c == nil || i.category == c) { s.insert(i.id) }
         selection = s
     }
 

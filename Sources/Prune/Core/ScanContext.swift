@@ -112,6 +112,12 @@ final class ScanContext {
         return p
     }
 
+    var hasProjectIndex: Bool {
+        guard lock.try() else { return false }
+        defer { lock.unlock() }
+        return _projects != nil
+    }
+
     func projectCoverageWarning() -> String? {
         guard lock.try() else { return "The project index did not finish; some results may be missing." }
         defer { lock.unlock() }

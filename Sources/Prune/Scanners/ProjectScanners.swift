@@ -83,7 +83,12 @@ struct ProjectArtifactScanner: Scanner {
         var whyRemove: String?
         var whyKeep: String?
 
-        if orphanNodeModules {
+        let venv = rule.id == "venv" ? ProjectDoctor.venvHealth(c.url) : nil
+        if let venv, venv.broken {
+            rec = .recommended
+            reason = "Broken virtualenv: " + (venv.reason ?? "it can't run.")
+            whyRemove = "Python can't start from this environment, so nothing uses it. Recreate it with: \(ProjectDoctor.pyRecreate(c.url.deletingLastPathComponent()))"
+        } else if orphanNodeModules {
             rec = .recommended
             reason = "No package.json next to it, so it was probably left behind."
             whyRemove = "There is no package.json in the parent folder, so no project can use these packages."

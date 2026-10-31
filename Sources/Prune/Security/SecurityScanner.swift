@@ -4,7 +4,7 @@ import Foundation
 enum SecurityScanner {
     static func run(settings: SettingsSnapshot, progress: @escaping (String) -> Void) -> SecurityReport {
         progress("Indexing projects…")
-        let idx = ProjectIndex.build(roots: settings.resolvedScanRoots(), settings: settings) { _ in }
+        let idx = ProjectIndex.cached(roots: settings.resolvedScanRoots(), settings: settings)
         let projectRoots = idx.projects.filter { $0.value.gitKind != .none || idx.outermostProject(for: $0.value.root) == $0.key }.map(\.value.root)
         let nodeModules = idx.artifacts.filter { $0.rule.id == "node_modules" }.map(\.url) + globalNodeModules()
         let sitePackages = pythonSitePackages(venvs: idx.venvs)
@@ -18,7 +18,7 @@ enum SecurityScanner {
             ("npm & Python packages", { PackageAnalyzer.scan(nodeModulesDirs: nodeModules, sitePackages: sitePackages, report: &$0) }),
             ("AI agents & skills", { AIToolsAnalyzer.scan(projectRoots: projectRoots, report: &$0) }),
             ("Project auto-run code", { ProjectThreatAnalyzer.scan(projectRoots: projectRoots, report: &$0) }),
-            ("Project credentials", { CredentialsAnalyzer.scan(index: idx, settings: settings, report: &$0) }),
+            ("Project credentials", { CredentialsAnalyzer.scan(index: idx, settings: settings, includeHome: true, report: &$0) }),
         ]
         var parts: [SecurityReport] = Array(repeating: SecurityReport(), count: jobs.count)
         let lock = NSLock()
@@ -35,6 +35,7 @@ enum SecurityScanner {
             merged.chains.merge(p.chains) { a, _ in a }
             merged.stats.merge(p.stats) { a, _ in a }
             merged.npmPackages.merge(p.npmPackages) { a, _ in a }
+            if let secrets = p.secrets { merged.secrets = secrets }
         }
         merged.stats["projects"] = projectRoots.count
         if let warning = idx.coverageWarning {

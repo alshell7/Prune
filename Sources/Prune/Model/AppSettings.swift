@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -66,6 +67,12 @@ final class AppSettings {
     var watchedFolders: [WatchedFolder] { didSet { save() } }
     var autoScanHours: Int { didSet { save() } }
     var lastScanDate: Date? { didSet { save() } }
+    /// "system", "light" or "dark".
+    var appearance: String { didSet { save(); Task { @MainActor in self.applyAppearance() } } }
+
+    @MainActor func applyAppearance() {
+        NSApp?.appearance = appearance == "dark" ? NSAppearance(named: .darkAqua) : appearance == "light" ? NSAppearance(named: .aqua) : nil
+    }
 
     private init() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -82,6 +89,7 @@ final class AppSettings {
         growthAlertGB = defaults.object(forKey: "growthAlertGB") as? Int ?? 2
         autoScanHours = defaults.object(forKey: "autoScanHours") as? Int ?? 0
         lastScanDate = defaults.object(forKey: "lastScanDate") as? Date
+        appearance = defaults.string(forKey: "appearance") ?? "system"
         if let data = defaults.data(forKey: "watchedFolders"),
            let list = try? JSONDecoder().decode([WatchedFolder].self, from: data) {
             watchedFolders = list
@@ -104,6 +112,7 @@ final class AppSettings {
         defaults.set(growthAlertGB, forKey: "growthAlertGB")
         defaults.set(autoScanHours, forKey: "autoScanHours")
         defaults.set(lastScanDate, forKey: "lastScanDate")
+        defaults.set(appearance, forKey: "appearance")
         if let data = try? JSONEncoder().encode(watchedFolders) {
             defaults.set(data, forKey: "watchedFolders")
         }

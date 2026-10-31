@@ -17,6 +17,8 @@ struct SecurityReport {
     var stats: [String: Int] = [:]
     /// name@version → install folders, kept for the optional online check.
     var npmPackages: [String: [String]] = [:]
+    /// Full credential results, shown on the Secrets page.
+    var secrets: SecretsReport?
 }
 
 // MARK: - Background items (launchd)

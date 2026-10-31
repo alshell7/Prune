@@ -60,6 +60,7 @@ final class SecurityModel {
             let r = await AppModel.background { SecurityScanner.run(settings: settings) { m in Task { @MainActor in SecurityModel.shared.status = m } } }
             withAnimation(.spring(duration: 0.5)) {
                 report = r
+                if let s = r.secrets { SecretsModel.shared.adopt(s) }
                 scanning = false
                 scannedAt = Date()
             }

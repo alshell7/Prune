@@ -397,8 +397,14 @@ struct LargeFilesScanner: Scanner {
 
         // Old installers and large downloads.
         progress.update("Checking Downloads…")
-        let downloads = FS.home.appendingPathComponent("Downloads")
-        let children = FS.children(downloads).filter { !$0.lastPathComponent.hasPrefix(".") }
+        // ~/Downloads plus Downloads folders kept on analyzed external drives (top level or one folder down).
+        var downloadFolders = [FS.home.appendingPathComponent("Downloads")]
+        for root in ctx.externalScanRoots {
+            downloadFolders.append(root.appendingPathComponent("Downloads"))
+            downloadFolders += FS.childDirs(root).filter { !$0.lastPathComponent.hasPrefix(".") }.map { $0.appendingPathComponent("Downloads") }
+        }
+        let children = downloadFolders.filter { FS.isDir($0) && !ctx.settings.isExcluded($0) }
+            .flatMap { FS.children($0).filter { !$0.lastPathComponent.hasPrefix(".") } }
         let sizes = Sizer.measureMany(children)
         for u in children where items[u.path] == nil {
             guard let m = sizes[u] else { continue }
@@ -419,7 +425,7 @@ struct LargeFilesScanner: Scanner {
         let ext = u.pathExtension.lowercased()
         let lastUsed = Spotlight.lastUsed(u) ?? FS.mtime(u)
         let days = Age.days(lastUsed) ?? 0
-        let inDownloads = u.path.hasPrefix(FS.home.path + "/Downloads/")
+        let inDownloads = u.deletingLastPathComponent().lastPathComponent == "Downloads"
         let base = u.deletingPathExtension().lastPathComponent.lowercased()
         let alreadyInstalled = installedNames
             .filter { $0.count > 3 && (base.contains($0) || base.contains($0.replacingOccurrences(of: " ", with: ""))) }

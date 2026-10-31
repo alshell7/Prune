@@ -81,12 +81,13 @@ struct RepoStatus: Identifiable, Hashable {
 enum CodeBackup {
     /// Dependency checkouts and downloaded sources: their upstream is the backup.
     static let vendoredMarkers = ["/third_party/", "/third-party/", "/vendor/", "/external/", "/deps/", "/.tmp/", "/tmp/", "/node_modules/",
-                                  "/checkouts/", "/SourcePackages/", "/.build/", "/Pods/", "/Carthage/"]
+                                  "/checkouts/", "/SourcePackages/", "/.build/", "/Pods/", "/Carthage/", "/site-packages/", "/dist-packages/",
+                                  "/pydeps/", "/.venv/", "/venv/", "/bower_components/", "/_deps/"]
 
     static func analyze(settings: SettingsSnapshot, externalVolumes: [URL]? = nil, progress: @escaping (String) -> Void) -> [RepoStatus] {
         progress("Finding projects…")
         let roots = externalVolumes.map { settings.resolvedScanRoots(externalVolumes: $0) } ?? settings.resolvedScanRoots()
-        let idx = ProjectIndex.build(roots: roots, settings: settings) { _ in }
+        let idx = ProjectIndex.cached(roots: roots, settings: settings)
         // Git checkouts, plus top-level projects that aren't inside any repository.
         var targets: [(URL, ProjectInfo.GitKind)] = idx.projects.values.filter { $0.gitKind != .none }.map { ($0.root, $0.gitKind) }
         let gitPaths = targets.map(\.0.path)

@@ -29,7 +29,7 @@ final class CodeBackupModel {
     var busy: String?
     var toast: (ok: Bool, text: String)?
 
-    var visible: [RepoStatus] { repos.filter { (showVendored || !$0.vendored) && (level == nil || $0.level == level) } }
+    var visible: [RepoStatus] { repos.filter { (showVendored || !$0.vendored) && (level == nil || $0.level == level) && AppModel.shared.inScope($0.path) } }
     var own: [RepoStatus] { repos.filter { !$0.vendored } }
     var atRisk: [RepoStatus] { own.filter { $0.level >= .uncommitted } }
 
@@ -123,6 +123,10 @@ struct CodeBackupView: View {
                 Button { cb.refresh(settings: model.settings.snapshot) } label: { Label("Check Again", systemImage: "arrow.clockwise") }
                     .disabled(cb.loading)
             }
+            DiskScopeBar { v in
+                let n = cb.atRisk.filter { v == nil || model.volume(for: $0.path)?.url.path == v!.url.path }.count
+                return n > 0 ? "\(n) at risk" : nil
+            }
             if !cb.own.isEmpty {
                 StackedLevelBar(repos: cb.own, selected: cb.level) { l in withAnimation(.snappy) { cb.level = cb.level == l ? nil : l } }
             }
@@ -156,7 +160,7 @@ struct CodeBackupView: View {
                             Image(systemName: r.level.symbol).foregroundStyle(r.level.color).frame(width: 20)
                                 .symbolEffect(.bounce, value: r.level)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(r.name).fontWeight(.medium)
+                                HStack(spacing: 5) { Text(r.name).fontWeight(.medium); VolumeBadge(url: r.path) }
                                 Text(r.headline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 Text(FS.tildePath(r.path.deletingLastPathComponent())).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                             }

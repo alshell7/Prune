@@ -92,6 +92,11 @@ struct CategoryView: View {
                     Text(category.blurb).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            DiskScopeBar { v in
+                let list = model.items.filter { $0.category == category && (v == nil || ($0.paths.first.map { model.volume(for: $0)?.url.path == v!.url.path } ?? false)) }
+                let size = Cleaner.effectiveSize(list.filter(\.countsAsReclaimable))
+                return size > 0 ? Fmt.bytes(size) : nil
+            }
             HStack(spacing: 10) {
                 Picker("", selection: $filter) { ForEach(Filter.allCases, id: \.self) { Text($0.rawValue) } }
                     .pickerStyle(.segmented).fixedSize().labelsHidden()
@@ -145,7 +150,10 @@ struct CategoryView: View {
                 HStack(spacing: 6) {
                     if item.lockedReason != nil { Image(systemName: "lock.fill").foregroundStyle(.secondary).font(.caption) }
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(item.title).lineLimit(1).truncationMode(.middle)
+                        HStack(spacing: 5) {
+                            Text(item.title).lineLimit(1).truncationMode(.middle)
+                            if let p = item.paths.first { VolumeBadge(url: p) }
+                        }
                         Text((item.group.map { $0 + " · " } ?? "") + item.reason)
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                     }

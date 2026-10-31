@@ -126,12 +126,29 @@ struct SettingsView: View {
             scanning.tabItem { Label("Scanning", systemImage: "magnifyingglass") }
             safety.tabItem { Label("Safety", systemImage: "checkmark.shield") }
         }
-        .frame(width: 560, height: 460)
+        .frame(width: 560, height: 560)
     }
 
     private var general: some View {
         @Bindable var s = model.settings
+        @Bindable var updater = Updater.shared
         return Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $s.appearance) {
+                    Label("System", systemImage: "circle.lefthalf.filled").tag("system")
+                    Label("Light", systemImage: "sun.max").tag("light")
+                    Label("Dark", systemImage: "moon.stars").tag("dark")
+                }
+                .pickerStyle(.segmented)
+                Button("Show How-it-works cards again") {
+                    UserDefaults.standard.removeObject(forKey: "guideDismissed")
+                    ModuleGuide.shared.dismissed = []
+                }
+            }
+            Section("Updates") {
+                Toggle("Check for updates automatically", isOn: $updater.autoCheck)
+                Toggle("Install updates automatically", isOn: $updater.autoInstall).disabled(!updater.autoCheck)
+            }
             Section("Menu bar") {
                 Toggle("Show free space next to the menu bar icon", isOn: $s.showFreeSpaceInMenuBar)
                 LaunchAtLoginToggle()

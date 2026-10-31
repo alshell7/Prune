@@ -140,6 +140,32 @@ final class ProjectIndex {
         var depthLimited = false
     }
 
+    // MARK: - Shared index
+
+    /// One walk serves several analyzers (cleanup, Code Backup, Security, Secrets, Project Doctor) when
+    /// they run within a short window over the same locations.
+    private static let cacheLock = NSLock()
+    private static var cache: (key: String, date: Date, index: ProjectIndex)?
+
+    private static func cacheKey(_ roots: [URL], _ settings: SettingsSnapshot) -> String {
+        (roots.map(\.standardizedFileURL.path).sorted() + ["|"] + settings.excludedPaths.sorted() + ["|"] + settings.excludedVolumes.sorted()).joined(separator: "\n")
+    }
+
+    static func cached(roots: [URL], settings: SettingsSnapshot, maxAge: TimeInterval = 120) -> ProjectIndex {
+        let key = cacheKey(roots, settings)
+        cacheLock.lock()
+        if let c = cache, c.key == key, Date().timeIntervalSince(c.date) < maxAge { cacheLock.unlock(); return c.index }
+        cacheLock.unlock()
+        let idx = build(roots: roots, settings: settings) { _ in }
+        remember(idx, settings: settings)
+        return idx
+    }
+
+    /// Called once a scan has finished with an index (so no scanner is still annotating it).
+    static func remember(_ idx: ProjectIndex, settings: SettingsSnapshot) {
+        cacheLock.lock(); cache = (cacheKey(idx.roots, settings), Date(), idx); cacheLock.unlock()
+    }
+
     static func build(roots: [URL], settings: SettingsSnapshot, largeFileRoots: [URL] = [], progress: @escaping (String) -> Void) -> ProjectIndex {
         let idx = ProjectIndex()
         idx.roots = roots
@@ -179,6 +205,11 @@ final class ProjectIndex {
             // A folder tagged as a cache by the CACHEDIR.TAG standard.
             if depth > 0, names.contains("CACHEDIR.TAG") {
                 local.artifacts.append(ArtifactCandidate(url: dirURL, rule: ArtifactRules.cachedirTag, siblings: []))
+                return
+            }
+            // A SwiftPM/Xcode package clone cache (-clonedSourcePackagesDirPath), whatever the folder is called.
+            if depth > 0, names.contains("workspace-state.json"), names.contains("checkouts"), names.contains("repositories") {
+                local.artifacts.append(ArtifactCandidate(url: dirURL, rule: ArtifactRules.swiftPackageCache, siblings: []))
                 return
             }
             var markers = Set<String>()
@@ -381,6 +412,13 @@ enum ArtifactRules {
         what: "A folder marked with CACHEDIR.TAG, the cross-tool convention for \u{201C}this is a disposable cache\u{201D} (used by Cargo, Gradle, and others).",
         impact: "The tool that owns it recreates it on its next run.",
         restore: { _ in "Recreated automatically by the owning tool" })
+
+    static let swiftPackageCache = ArtifactRule(
+        id: "spmcache", names: [], kind: "Swift package clones", ecosystem: .apple, risk: .safe,
+        validate: { _, _ in true },
+        what: "Git clones of Swift packages that Xcode or SwiftPM resolved for a project (workspace-state.json, checkouts, repositories).",
+        impact: "The next build resolves and downloads the packages again.",
+        restore: { _ in "Xcode › File › Packages › Resolve Package Versions (or swift package resolve)" })
 
     static let rules: [ArtifactRule] = [
         ArtifactRule(id: "node_modules", names: ["node_modules"], kind: "node_modules", ecosystem: .node, risk: .low,

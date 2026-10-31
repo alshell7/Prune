@@ -14,12 +14,19 @@ struct OverviewView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
                 }
-                if let boot = model.bootVolume {
+                DiskScopeBar { v in
+                    let t = v.map { model.summary.byVolume[$0.url.path]?.recommended ?? 0 } ?? model.summary.byVolume.values.reduce(0) { $0 + $1.recommended }
+                    return t > 0 ? "+\(Fmt.bytes(t))" : nil
+                }
+                if let hero = model.scopeVolume ?? model.bootVolume {
                     Card {
-                        DiskHero(volume: boot, recommended: model.summary.byVolume[boot.url.path]?.recommended ?? 0,
-                                 optional: max(0, (model.summary.byVolume[boot.url.path]?.reclaimable ?? 0) - (model.summary.byVolume[boot.url.path]?.recommended ?? 0)))
+                        DiskHero(volume: hero, recommended: model.summary.byVolume[hero.url.path]?.recommended ?? 0,
+                                 optional: max(0, (model.summary.byVolume[hero.url.path]?.reclaimable ?? 0) - (model.summary.byVolume[hero.url.path]?.recommended ?? 0)))
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(hero.url.path)
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     }
+                    .animation(.snappy, value: hero.url.path)
                 }
                 DisksSection()
                 if model.isScanning {
@@ -169,6 +176,14 @@ struct OverviewView: View {
                        value: cb.loading ? "Checking…" : (cb.checkedAt == nil ? "Not checked yet" : (cb.atRisk.isEmpty ? "No local changes ahead" : "\(cb.atRisk.count) project\(cb.atRisk.count == 1 ? "" : "s") need attention")),
                        detail: cb.checkedAt == nil ? "" : "\(cb.own.filter { $0.level == .uncommitted }.count) with uncommitted edits",
                        busy: cb.loading) { model.open(.codeBackup) }
+            let sm = SecretsModel.shared
+            let exposed = sm.report.issues.filter { $0.severity >= .high }.count
+            StatusTile(icon: exposed > 0 ? "key.fill" : "key.horizontal.fill",
+                       tint: sm.report.scannedAt == nil ? .accentColor : (exposed > 0 ? .red : .green),
+                       title: "Secrets",
+                       value: sm.loading ? "Checking…" : (sm.report.scannedAt == nil ? "Not checked yet" : (exposed == 0 ? "No exposed secrets" : "\(exposed) exposed")),
+                       detail: sm.report.scannedAt == nil ? "" : "\(sm.report.envFiles) env files checked",
+                       busy: sm.loading) { model.open(.secrets) }
         }
     }
 

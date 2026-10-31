@@ -101,6 +101,7 @@ struct AppsView: View {
     @State private var off = OffloadModel.shared
     @State private var confirm: (String, String, String, () -> Void)?
     @State private var moveData = true
+    @State private var removingExtension: AddOn?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -126,6 +127,9 @@ struct AppsView: View {
         .onAppear { if am.apps.isEmpty { am.load() }; off.refresh() }
         .sheet(isPresented: $off.showProgress) { OffloadProgressSheet() }
         .onChange(of: off.running) { _, running in if !running { am.load() } }
+        .sheet(item: $removingExtension) { x in SystemExtensionRemovalSheet(addOn: x) { removed in
+            if removed { withAnimation { am.addOns.removeAll { $0.id == x.id } } }
+        } }
         .alert(confirm?.0 ?? "", isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } })) {
             Button(confirm?.2 ?? "OK") { confirm?.3() }
             Button("Cancel", role: .cancel) {}
@@ -445,16 +449,25 @@ struct AppsView: View {
                                 })
                             } label: { Label("Quarantine", systemImage: "lock.doc") }
                         }
+                        if x.kind == .systemExtension && x.state == .dangling {
+                            Button { removingExtension = x } label: { Label("Remove…", systemImage: "trash") }.buttonStyle(.borderedProminent)
+                        }
+                        if x.kind == .appExtension && x.state == .ok {
+                            Button {
+                                Task {
+                                    let r = await AppModel.background { PluginRegistry.setEnabled(x, !x.active) }
+                                    am.flash(r.0, r.1)
+                                    if r.0, let i = am.addOns.firstIndex(where: { $0.id == x.id }) { withAnimation(.snappy) { am.addOns[i].active.toggle() } }
+                                }
+                            } label: { Label(x.active ? "Disable" : "Enable", systemImage: x.active ? "pause.circle" : "play.circle") }
+                        }
                         if x.kind == .systemExtension || x.kind == .appExtension {
-                            Button { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!) } label: { Label("Login Items & Extensions", systemImage: "gearshape") }
+                            Button { SystemExtensions.openSettings() } label: { Label("Login Items & Extensions", systemImage: "gearshape") }
                         }
                         if FS.exists(URL(fileURLWithPath: x.path)) { Button { Finder.reveal([URL(fileURLWithPath: x.path)]) } label: { Label("Reveal", systemImage: "magnifyingglass") } }
                     }
                     .buttonStyle(.bordered)
-                    if x.kind == .systemExtension && x.state == .dangling {
-                        Text("macOS only lets the owning app remove a system extension. Turn it off in System Settings › General › Login Items & Extensions, or reinstall the app and use its uninstaller.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+
                 }
                 .padding(18)
             }
@@ -494,6 +507,115 @@ extension OffloadModel {
             running = false
             records = OffloadRegistry.load()
             AppModel.shared.refreshVolumes()
+        }
+    }
+}
+
+/// Step-by-step removal of a system extension whose app is gone. macOS only lets the owning app (or SIP-off
+/// tooling) uninstall one, so Prune does what is possible and verifies each step.
+struct SystemExtensionRemovalSheet: View {
+    let addOn: AddOn
+    var done: (Bool) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var record: SystemExtensionRecord?
+    @State private var leftovers: [URL] = []
+    @State private var sip = true
+    @State private var message: (Bool, String)?
+    @State private var working = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: "puzzlepiece.extension.fill").font(.system(size: 30)).foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Remove \(addOn.name)").font(.title3.weight(.semibold))
+                    Text("\(record?.kindLabel ?? "System extension") · team \(record?.teamID ?? "?") · \(record?.state.replacingOccurrences(of: "_", with: " ") ?? "")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let app = record?.containerApp {
+                Text("Installed by \((app as NSString).lastPathComponent), which is gone. Only the installing app can normally uninstall a system extension, so Prune does it in steps.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            step(1, "Stop it from loading", done: record.map { !$0.isEnabled } ?? true,
+                 detail: sip ? "Turn it off in System Settings › General › Login Items & Extensions (click ⓘ next to Driver or Network Extensions). Prune re-checks when you come back."
+                             : "System Integrity Protection is off, so macOS can uninstall it directly.") {
+                if sip { SystemExtensions.openSettings() } else { uninstall() }
+            } label: { sip ? "Open Settings" : "Uninstall" }
+            step(2, "Remove leftover files", done: leftovers.isEmpty,
+                 detail: leftovers.isEmpty ? "No leftover support files or launch items from this vendor." : leftovers.map { FS.tildePath($0) }.joined(separator: "\n")) {
+                quarantineLeftovers()
+            } label: { "Quarantine \(leftovers.count)" }
+            let vendor = record.flatMap { SystemExtensions.vendorUninstallers[$0.vendorPrefix] }
+            step(3, "Remove macOS's copy", done: record == nil,
+                 detail: "macOS keeps its own copy until the installing app asks to remove it. \(vendor.map { "Reinstall \($0.name) and run its uninstaller, or" } ?? "Reinstall the app and use its uninstaller, or") leave it turned off: a disabled extension doesn't load.") {
+                if let v = vendor, let u = URL(string: v.url) { NSWorkspace.shared.open(u) }
+            } label: { vendor != nil ? "Uninstall guide" : "" }
+            if let m = message {
+                Label(m.1, systemImage: m.0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").font(.callout).foregroundStyle(m.0 ? .green : .orange)
+            }
+            HStack {
+                Button("Check Again") { reload() }
+                Spacer()
+                Button("Done") { done(record == nil); dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22).frame(width: 540)
+        .onAppear(perform: reload)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in reload() }
+    }
+
+    private func step(_ n: Int, _ title: String, done: Bool, detail: String, action: @escaping () -> Void, label: () -> String) -> some View {
+        let text = label()
+        return HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle().fill(done ? Color.green : Color.secondary.opacity(0.15)).frame(width: 26, height: 26)
+                if done { Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(.white).transition(.scale) }
+                else { Text("\(n)").font(.caption.weight(.bold)) }
+            }
+            .animation(.spring(duration: 0.4), value: done)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+            Spacer()
+            if !done && !text.isEmpty { Button(text, action: action).disabled(working) }
+        }
+        .padding(12)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func reload() {
+        Task {
+            let (r, l, s) = await AppModel.background { () -> (SystemExtensionRecord?, [URL], Bool) in
+                let rec = SystemExtensions.records().first { $0.identifier == addOn.bundleID }
+                let ids = Array(AppIndex.build().byBundleID.keys)
+                return (rec, rec.map { SystemExtensions.leftovers(for: $0, installedBundleIDs: ids) } ?? [], SystemExtensions.sipEnabled)
+            }
+            withAnimation(.snappy) { record = r; leftovers = l; sip = s }
+        }
+    }
+
+    private func uninstall() {
+        guard let r = record else { return }
+        working = true
+        Task {
+            let res = await AppModel.background { SystemExtensions.uninstall(r) }
+            working = false
+            message = (res.ok, res.ok ? "macOS removed the extension. It may finish after a restart." : res.stderr)
+            reload()
+        }
+    }
+
+    private func quarantineLeftovers() {
+        working = true
+        let paths = leftovers.map(\.path)
+        Task {
+            let f = SecurityFinding(id: "sysext:\(addOn.bundleID)", area: .persistence, severity: .info, title: addOn.name, subtitle: "", evidence: [], explanation: "", recommendation: "", actions: [])
+            let r = await AppModel.background { SecurityActions.perform(.quarantine(paths: paths), finding: f) }
+            working = false
+            message = (r.ok, r.message)
+            reload()
         }
     }
 }

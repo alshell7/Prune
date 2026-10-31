@@ -41,6 +41,26 @@ enum PruneMain {
             print("\nInventory (clean): \(inv.count) items · " + Dictionary(grouping: inv, by: \.area).map { "\($0.key.rawValue): \($0.value.count)" }.joined(separator: ", "))
             return
         }
+        if args.contains("--secrets") {
+            let s = AppSettings.shared.snapshot
+            let started = Date()
+            let r = SecretsEngine.scan(index: ProjectIndex.build(roots: s.resolvedScanRoots(), settings: s) { _ in }, settings: s)
+            print("Secrets · \(String(format: "%.1f", Date().timeIntervalSince(started)))s · \(r.filesChecked) files · \(r.envFiles) env files · \(r.issues.count) issues")
+            for f in r.files.sorted(by: { $0.severity > $1.severity }) where args.contains("--all") || f.isIssue {
+                print("\n\(f.severity.label.uppercased())  \(FS.tildePath(f.url)) — \(f.origin == .project ? f.git.rawValue : (f.label ?? ""))\(f.pushed ? " · PUSHED" : f.inHistory ? " · in history" : "") — \(f.headline)")
+                for h in f.hits.prefix(6) { print(String(format: "    line %-4d %-28@ %-18@ %.2f  %@", h.line, h.kind as NSString, h.masked as NSString, h.confidence, h.why as NSString)) }
+            }
+            for rc in r.remotes { print("\nMEDIUM  credential in git remote: \(FS.tildePath(rc.project))") }
+            if !r.reused.isEmpty { print("\nReused secrets: \(r.reused.count)") }
+            return
+        }
+        if args.contains("--doctor") {
+            let s = AppSettings.shared.snapshot
+            let issues = ProjectDoctor.scan(index: ProjectIndex.build(roots: s.resolvedScanRoots(), settings: s) { _ in })
+            for i in issues { print("\(i.level.label.uppercased())  [\(i.kind.rawValue)] \(i.title) — \(i.detail)\(i.bytes > 0 ? " · \(Fmt.bytes(i.bytes))" : "")\(i.fixLabel.isEmpty ? "" : " → \(i.fixLabel)")") }
+            for (old, n) in ProjectDoctor.previousLocations(issues) { print("Moved from \(old): \(n) references") }
+            return
+        }
         if args.contains("--code-backup") {
             let list = CodeBackup.analyze(settings: AppSettings.shared.snapshot) { _ in }
             for s in list {

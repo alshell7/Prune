@@ -164,6 +164,67 @@ enum FeatureSelfTest {
         let disconnected = PluginRegistry.removeStale(offline, mounted: []) { _ in attemptedChange = true; return ShellResult(status: 0, stdout: "", stderr: "") }
         SelfTest.check("disconnected drive is not treated as dangling", disconnected.0 == nil && !attemptedChange)
 
+        print("Secrets engine")
+        let openai = "sk-proj-" + "Q7v2KxR9mZ4tB8nW1pL6sD3fH0jY5cA2eG7uI9oT4rE1wN8b"
+        let found = SecretsEngine.detect(in: "OPENAI_API_KEY=\(openai)\n", envFile: true)
+        SelfTest.check("provider formats are named", found.first?.provider == "OpenAI" && found.first?.kind == "OpenAI API key")
+        SelfTest.check("masked previews never contain the value", found.allSatisfy { !$0.masked.contains(openai) && $0.masked.contains("•") })
+        SelfTest.check("identifiers in code are not secrets", SecretsEngine.detect(in: "token = ctx->vocab.token_to_id\nconst token = tokenizer.next()\n", codeFile: true).isEmpty)
+        SelfTest.check("words and templates are not secrets", SecretsEngine.detect(in: "SECRET_NAME=\"session-cookie-name\"\napi_key: \"{a}.token_shift_count\"\n").isEmpty)
+        SelfTest.check("secret-manager references are not secrets", SecretsEngine.detect(in: "DB_PASSWORD=op://vault/db/password\nAPI_TOKEN=${{ secrets.API_TOKEN }}\n").isEmpty)
+        let anon = "eyJhbGciOiJIUzI1NiJ9." + Data(#"{"role":"anon","iss":"supabase"}"#.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "") + ".c2lnbmF0dXJlLXZhbHVl"
+        SelfTest.check("public Supabase anon keys are low impact", SecretsEngine.detect(in: "key = '\(anon)'").allSatisfy(\.lowImpact))
+        SelfTest.check("local dev database passwords are low impact",
+                       SecretsEngine.detect(in: "DATABASE_URL=postgres://app:devpass42@localhost:5432/app\n").allSatisfy(\.lowImpact))
+        let envRepo = base.appendingPathComponent("secrets-repo")
+        text(envRepo.appendingPathComponent(".env"), "STRIPE_KEY=sk_live_" + "9fJ2kL4mN6pQ8rS0tU2vW4xY\nDEBUG=true\n")
+        _ = Git.run(envRepo, ["init", "-q"])
+        let ignoredResult = SecretsEngine.addToGitignore(envRepo.appendingPathComponent(".env"))
+        SelfTest.check("adds an env file to .gitignore and git confirms it", ignoredResult.0, ignoredResult.1)
+        let exampleMade = SecretsEngine.makeExample(envRepo.appendingPathComponent(".env"))
+        let exampleText = FS.readText(envRepo.appendingPathComponent(".env.example")) ?? ""
+        SelfTest.check("generated example keeps keys and drops values", exampleMade.0 && exampleText.contains("STRIPE_KEY=") && !exampleText.contains("sk_live"))
+        _ = Git.run(envRepo, ["add", "-f", ".env"])
+        let untracked = SecretsEngine.stopTracking(envRepo.appendingPathComponent(".env"))
+        SelfTest.check("stop tracking keeps the file and removes it from the index",
+                       untracked.0 && FS.exists(envRepo.appendingPathComponent(".env")) && Git.run(envRepo, ["ls-files", ".env"]).stdout.isEmpty)
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + (Data("openssh-key-v1\0".utf8) + Data([0, 0, 0, 4]) + Data("none".utf8)).base64EncodedString() + "\n-----END OPENSSH PRIVATE KEY-----\n"
+        SelfTest.check("detects an SSH key without a passphrase", SecretsEngine.sshKeyIsUnencrypted(key))
+
+        print("Project Doctor")
+        let moved = base.appendingPathComponent("moved-project")
+        let venv = moved.appendingPathComponent(".venv")
+        text(venv.appendingPathComponent("pyvenv.cfg"), "home = /usr/bin\n")
+        text(venv.appendingPathComponent("bin/pip"), "#!/Users/nobody/Old/moved-project/.venv/bin/python3\nimport pip\n")
+        let health = ProjectDoctor.venvHealth(venv)
+        SelfTest.check("a virtualenv moved from another folder is broken", health.broken && health.oldPath == "/Users/nobody/Old/moved-project/.venv")
+        text(moved.appendingPathComponent("assets/logo.txt"), "x")
+        try? fm.createSymbolicLink(atPath: moved.appendingPathComponent("logo-link").path, withDestinationPath: "/Users/nobody/Old/moved-project/assets/logo.txt")
+        let dangling = ProjectDoctor.danglingLinks(in: moved)
+        if case .relink(_, let target)? = dangling.first?.fix { SelfTest.check("dangling link retargets to the new project location", target == moved.path + "/assets/logo.txt") }
+        else { SelfTest.check("dangling link retargets to the new project location", false) }
+        if let first = dangling.first { _ = ProjectDoctor.apply(first) }
+        SelfTest.check("relinking points the link at the existing file", (try? fm.destinationOfSymbolicLink(atPath: moved.appendingPathComponent("logo-link").path)) == moved.path + "/assets/logo.txt")
+
+        print("Updates and history")
+        SelfTest.check("version comparison is numeric", UpdateLogic.isNewer("1.10.0", than: "1.9.9") && !UpdateLogic.isNewer("v1.1.0", than: "1.1.0") && UpdateLogic.isNewer("2.0", than: "1.99.1"))
+        let releaseJSON = #"{"tag_name":"v1.2.0","name":"Prune 1.2","body":"Notes","html_url":"https://github.com/alshell7/Prune/releases/tag/v1.2.0","assets":[{"name":"Prune.zip","browser_download_url":"https://github.com/alshell7/Prune/releases/download/v1.2.0/Prune.zip"},{"name":"Prune.zip.sha256","browser_download_url":"https://github.com/alshell7/Prune/releases/download/v1.2.0/Prune.zip.sha256"}]}"#
+        let rel = UpdateLogic.parse(Data(releaseJSON.utf8))
+        SelfTest.check("release metadata finds the zip and its checksum", rel?.version == "1.2.0" && rel?.zipURL?.lastPathComponent == "Prune.zip" && rel?.checksumURL != nil)
+        SelfTest.check("downloads only from GitHub over HTTPS", UpdateLogic.trustedHost(URL(string: "https://objects.githubusercontent.com/x")!) && !UpdateLogic.trustedHost(URL(string: "http://github.com/x")!) && !UpdateLogic.trustedHost(URL(string: "https://evil.example/x")!))
+        let now = Date()
+        let shrinking = (0..<10).map { SpaceHistory.Sample(date: now.addingTimeInterval(Double($0) * 86_400), free: 50_000_000_000 - Int64($0) * 2_000_000_000, total: 100_000_000_000) }
+        let f = SpaceHistory.forecast(shrinking)
+        SelfTest.check("forecast estimates days until the disk is full", f.map { abs($0.bytesPerDay + 2e9) < 1e7 && abs(($0.daysUntilFull ?? 0) - 16) < 0.1 } ?? false)
+        let sxPlist = base.appendingPathComponent("db.plist")
+        let plistObj: [String: Any] = ["extensions": [["identifier": "org.example.driver", "teamID": "ABCDE12345", "state": "activated_enabled",
+                                                        "originPath": "/Applications/.Gone.app/Contents/Library/SystemExtensions/org.example.driver.dext", "categories": ["com.apple.system_extension.driver_extension"]]]]
+        try? PropertyListSerialization.data(fromPropertyList: plistObj, format: .xml, options: 0).write(to: sxPlist)
+        let recs = SystemExtensions.records(plist: sxPlist.path)
+        SelfTest.check("system extension records name their missing app", recs.first?.containerApp == "/Applications/.Gone.app" && recs.first?.containerExists == false && recs.first?.kindLabel == "Driver extension")
+        SelfTest.check("leftovers are never offered while the vendor still has an installed app",
+                       recs.first.map { SystemExtensions.leftovers(for: $0, installedBundleIDs: ["org.example.app"]).isEmpty } ?? false)
+
         print(SelfTest.failures == 0 ? "\nAll feature checks passed." : "\n\(SelfTest.failures) feature check(s) failed.")
         return SelfTest.failures == 0 ? 0 : 1
     }
