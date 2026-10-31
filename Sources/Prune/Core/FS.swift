@@ -383,3 +383,29 @@ enum Age {
         return max(0, Int(Date().timeIntervalSince(d) / 86_400))
     }
 }
+
+
+/// Parallel work that leaves headroom for the rest of the Mac: half the cores, at utility priority.
+enum Throttled {
+    static var width: Int { max(2, ProcessInfo.processInfo.activeProcessorCount / 2) }
+
+    static func forEach(_ count: Int, width: Int = Throttled.width, _ body: (Int) -> Void) {
+        guard count > 0 else { return }
+        let lock = NSLock()
+        var next = 0
+        withoutActuallyEscaping(body) { body in
+            let group = DispatchGroup()
+            let queue = DispatchQueue.global(qos: .utility)
+            for _ in 0..<min(width, count) {
+                queue.async(group: group) {
+                    while true {
+                        lock.lock(); let i = next; next += 1; lock.unlock()
+                        guard i < count else { return }
+                        body(i)
+                    }
+                }
+            }
+            group.wait()
+        }
+    }
+}

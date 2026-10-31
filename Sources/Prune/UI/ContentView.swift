@@ -6,51 +6,72 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var guide = ModuleGuide.shared
 
+    @ViewBuilder private var detailContent: some View {
+        switch model.route ?? .overview {
+        case .overview: OverviewView()
+        case .category(let c): CategoryView(category: c).id(c)
+        case .explorer: ExplorerView()
+        case .systemData: SystemDataView()
+        case .offload: OffloadView()
+        case .security: SecurityView()
+        case .codeBackup: CodeBackupView()
+        case .taskManager: TaskManagerView()
+        case .network: NetworkView()
+        case .apps: AppsView()
+        case .duplicates: DuplicatesView()
+        case .secrets: SecretsView()
+        case .doctor: DoctorView()
+        case .maintenance: MaintenanceView()
+        case .timeline: SpaceTimelineView()
+        case .watched: WatchedView()
+        case .history: HistoryView()
+        }
+    }
+
+    // Plain layout: the intro card sits above the module (not in the toolbar's safe area), and routes switch
+    // instantly. Cross-fading two module views left the outgoing one clickable during the animation.
+    private var detailColumn: some View {
+        VStack(spacing: 0) {
+            if guide.isVisible(model.route ?? .overview) { ModuleIntroCard(route: model.route ?? .overview) }
+            detailContent
+        }
+        .frame(minWidth: 640)
+    }
+
     var body: some View {
         @Bindable var model = model
-        NavigationSplitView {
-            Sidebar()
-                .navigationSplitViewColumnWidth(min: 270, ideal: 290, max: 360)
-        } detail: {
-            Group {
-                switch model.route ?? .overview {
-                case .overview: OverviewView()
-                case .category(let c): CategoryView(category: c).id(c)
-                case .explorer: ExplorerView()
-                case .systemData: SystemDataView()
-                case .offload: OffloadView()
-                case .security: SecurityView()
-                case .codeBackup: CodeBackupView()
-                case .taskManager: TaskManagerView()
-                case .network: NetworkView()
-                case .apps: AppsView()
-                case .duplicates: DuplicatesView()
-                case .secrets: SecretsView()
-                case .doctor: DoctorView()
-                case .maintenance: MaintenanceView()
-                case .timeline: SpaceTimelineView()
-                case .watched: WatchedView()
-                case .history: HistoryView()
+        Group {
+            if DemoMode.active {
+                // README captures: the glass sidebar is composited outside the app and can't be rendered offscreen,
+                // so the same Sidebar view sits in a plain floating column.
+                HStack(spacing: 0) {
+                    Sidebar()
+                        .padding(.top, 34)
+                        .frame(width: 270)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.08)))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
+                        .padding(8)
+                        .ignoresSafeArea(.container, edges: .top)
+                    detailColumn
                 }
-            }
-            .id(model.route?.guideKey ?? "overview")
-            .transition(.opacity.combined(with: .offset(y: 8)))
-            .animation(.snappy(duration: 0.28), value: model.route)
-            .frame(minWidth: 640)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                let route = model.route ?? .overview
-                if guide.isVisible(route) { ModuleIntroCard(route: route).id(route.guideKey) }
+            } else {
+                NavigationSplitView {
+                    Sidebar()
+                        .navigationSplitViewColumnWidth(min: 270, ideal: 290, max: 360)
+                } detail: {
+                    detailColumn
+                }
             }
         }
         .sheet(isPresented: $guide.showTour) { WelcomeTour() }
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button { guide.toggle(model.route ?? .overview) } label: {
-                    Label("How it works", systemImage: guide.isVisible(model.route ?? .overview) ? "questionmark.circle.fill" : "questionmark.circle")
-                }
-                .help("Show how this module works")
-            }
             ToolbarItemGroup(placement: .primaryAction) {
+                Button { guide.toggle(model.route ?? .overview) } label: {
+                    Label("How it works", systemImage: "questionmark.circle")
+                }
+                .help("Show or hide how this module works (⌘/)")
                 if model.isScanning {
                     ProgressView().controlSize(.small)
                 } else {
@@ -91,6 +112,17 @@ struct ContentView: View {
                 }
             }
             if d.bool(forKey: "PruneAutoScan"), !model.hasScanned, !model.isScanning { model.scan() }
+            if DemoMode.active, let out = d.string(forKey: "PruneShots") {
+                try? await Task.sleep(for: .seconds(2))
+                await DemoDirector(root: URL(fileURLWithPath: out)).run { openWindow(id: $0) }
+            }
+            // Diagnostics: step through every module (like clicking each sidebar row).
+            if d.bool(forKey: "PruneVisitAll") {
+                let all: [Route] = [.overview] + Category.allCases.map { .category($0) } + [.security, .secrets, .codeBackup, .taskManager, .network, .apps,
+                                     .systemData, .offload, .explorer, .duplicates, .doctor, .maintenance, .timeline, .watched, .history, .overview]
+                for r in all { model.route = r; FileHandle.standardError.write(Data("route → \(r.guideKey)\n".utf8)); try? await Task.sleep(for: .milliseconds(900)) }
+                print("visit done")
+            }
             if d.bool(forKey: "PruneQuickPanel") { openWindow(id: "quick-panel") }
             if d.bool(forKey: "PruneActivate") { NSApp.activate(ignoringOtherApps: true) }
             if d.bool(forKey: "PruneReviewRecommended") {
@@ -121,65 +153,85 @@ struct Sidebar: View {
         }
     }
 
+    struct Entry: Identifiable {
+        var route: Route
+        var title: String
+        var symbol: String
+        var detail: String? = nil
+        var busy = false
+        var badge: (count: Int, tint: Color)? = nil
+        var id: Route { route }
+    }
+
+    /// The sidebar as data, rendered by the native list (and by README captures).
+    var sections: [(title: String?, entries: [Entry])] {
+        let cleanup = Category.allCases.map { c -> Entry in
+            let busy = model.isScanning && !model.finishedScanners.contains(scannerFor(c))
+            let size = model.summary.byCategory[c].flatMap { $0.size > 0 ? Fmt.bytes($0.size) : nil }
+            return Entry(route: .category(c), title: c.title, symbol: c.icon, detail: busy ? nil : size, busy: busy)
+        }
+        func badge(_ n: Int, _ tint: Color) -> (Int, Color)? { n > 0 ? (n, tint) : nil }
+        return [
+            (nil, [Entry(route: .overview, title: "Overview", symbol: "gauge.with.dots.needle.33percent")]),
+            ("Cleanup", cleanup),
+            ("Protect", [
+                Entry(route: .security, title: "Security", symbol: "shield.lefthalf.filled", badge: badge(SecurityModel.shared.issues.filter { $0.severity >= .medium }.count, .orange)),
+                Entry(route: .secrets, title: "Secrets", symbol: "key.fill", badge: badge(SecretsModel.shared.report.issues.filter { $0.severity >= .high }.count, .red)),
+                Entry(route: .codeBackup, title: "Code Backup", symbol: "externaldrive.badge.checkmark", badge: badge(CodeBackupModel.shared.atRisk.count, .orange)),
+                Entry(route: .taskManager, title: "Task Manager", symbol: "cpu"),
+                Entry(route: .network, title: "Network", symbol: "network"),
+                Entry(route: .apps, title: "Apps & Extensions", symbol: "square.grid.3x3.topleft.filled"),
+            ]),
+            ("Tools", [
+                Entry(route: .systemData, title: "System Data", symbol: "internaldrive"),
+                Entry(route: .offload, title: "Offload to Drive", symbol: "externaldrive.badge.plus"),
+                Entry(route: .explorer, title: "Disk Explorer", symbol: "square.grid.3x3.square"),
+                Entry(route: .duplicates, title: "Duplicate Finder", symbol: "doc.on.doc"),
+                Entry(route: .doctor, title: "Project Doctor", symbol: "stethoscope", badge: badge(DoctorModel.shared.issues.filter { $0.level == .broken }.count, .pink)),
+                Entry(route: .maintenance, title: "Maintenance", symbol: "wrench.and.screwdriver"),
+                Entry(route: .timeline, title: "Space Timeline", symbol: "chart.xyaxis.line"),
+                Entry(route: .watched, title: "Watched Folders", symbol: "eye"),
+                Entry(route: .history, title: "History", symbol: "clock.arrow.circlepath"),
+            ]),
+        ]
+    }
+
+    @ViewBuilder func row(_ e: Entry) -> some View {
+        HStack {
+            Label(e.title, systemImage: e.symbol)
+            Spacer()
+            if e.busy {
+                ProgressView().controlSize(.mini)
+            } else if let b = e.badge {
+                Text("\(b.count)").font(.caption2.weight(.bold).monospacedDigit()).foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 1).background(b.tint, in: Capsule())
+            } else if let d = e.detail {
+                Text(d).font(.caption2.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
+            }
+        }
+    }
+
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            List(selection: $model.route) {
-                Label("Overview", systemImage: "gauge.with.dots.needle.33percent").tag(Route.overview)
-                Section("Cleanup") {
-                    ForEach(Category.allCases) { c in
-                        HStack {
-                            Label(c.title, systemImage: c.icon)
-                            Spacer()
-                            if model.isScanning && !model.finishedScanners.contains(scannerFor(c)) {
-                                ProgressView().controlSize(.mini)
-                            } else if let s = model.summary.byCategory[c], s.size > 0 {
-                                Text(Fmt.bytes(s.size)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
-                            }
+            if DemoMode.active {
+                CaptureSidebarList(sidebar: self)
+            } else {
+                List(selection: $model.route) {
+                    ForEach(sections.indices, id: \.self) { i in
+                        let section = sections[i]
+                        if let title = section.title {
+                            Section(title) { ForEach(section.entries) { e in row(e).tag(e.route) } }
+                        } else {
+                            ForEach(section.entries) { e in row(e).tag(e.route) }
                         }
-                        .tag(Route.category(c))
                     }
                 }
-                Section("Protect") {
-                    badged("Security", "shield.lefthalf.filled", SecurityModel.shared.issues.filter { $0.severity >= .medium }.count, .orange).tag(Route.security)
-                    badged("Secrets", "key.fill", SecretsModel.shared.report.issues.filter { $0.severity >= .high }.count, .red).tag(Route.secrets)
-                    badged("Code Backup", "externaldrive.badge.checkmark", CodeBackupModel.shared.atRisk.count, .orange).tag(Route.codeBackup)
-                    Label("Task Manager", systemImage: "cpu").tag(Route.taskManager)
-                    Label("Network", systemImage: "network").tag(Route.network)
-                    Label("Apps & Extensions", systemImage: "square.grid.3x3.topleft.filled").tag(Route.apps)
-                }
-                Section("Tools") {
-                    Label("System Data", systemImage: "internaldrive").tag(Route.systemData)
-                    Label("Offload to Drive", systemImage: "externaldrive.badge.plus").tag(Route.offload)
-                    Label("Disk Explorer", systemImage: "square.grid.3x3.square").tag(Route.explorer)
-                    Label("Duplicate Finder", systemImage: "doc.on.doc").tag(Route.duplicates)
-                    badged("Project Doctor", "stethoscope", DoctorModel.shared.issues.filter { $0.level == .broken }.count, .pink).tag(Route.doctor)
-                    Label("Maintenance", systemImage: "wrench.and.screwdriver").tag(Route.maintenance)
-                    Label("Space Timeline", systemImage: "chart.xyaxis.line").tag(Route.timeline)
-                    Label("Watched Folders", systemImage: "eye").tag(Route.watched)
-                    Label("History", systemImage: "clock.arrow.circlepath").tag(Route.history)
-                }
+                .listStyle(.sidebar)
             }
-            .listStyle(.sidebar)
             // A real footer (not an overlay), so it never covers the last sidebar rows.
             SidebarDiskFooter()
         }
-    }
-}
-
-extension Sidebar {
-    func badged(_ title: String, _ symbol: String, _ count: Int, _ tint: Color) -> some View {
-        HStack {
-            Label(title, systemImage: symbol)
-            Spacer()
-            if count > 0 {
-                Text("\(count)").font(.caption2.weight(.bold).monospacedDigit()).foregroundStyle(.white)
-                    .padding(.horizontal, 6).padding(.vertical, 1).background(tint, in: Capsule())
-                    .contentTransition(.numericText())
-                    .transition(.scale.combined(with: .opacity))
-            }
-        }
-        .animation(.snappy, value: count)
     }
 }
 

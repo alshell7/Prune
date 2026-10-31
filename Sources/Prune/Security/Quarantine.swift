@@ -16,6 +16,7 @@ enum Quarantine {
     static var manifest: URL { root.appendingPathComponent("manifest.json") }
 
     static func load() -> [QuarantineEntry] {
+        if DemoMode.active { return [] }
         guard let d = try? Data(contentsOf: manifest) else { return [] }
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
         return (try? dec.decode([QuarantineEntry].self, from: d)) ?? []

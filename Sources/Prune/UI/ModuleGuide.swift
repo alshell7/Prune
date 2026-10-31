@@ -178,52 +178,111 @@ final class ModuleGuide {
 
 // MARK: - Animated stage
 
+/// Plays a short burst (two loops) when it appears or is hovered, then rests on a still frame, and never
+/// animates while the window is in the background. Moving parts are drawn into one Canvas layer, without
+/// shadows, so each frame is a single cheap layer update rather than a re-render of many views.
 struct ExplainerStage: View {
     let scene: ExplainerScene
     var tint: Color = .accentColor
     var height: CGFloat = 132
+    static let cycle = 3.6
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.controlActiveState) private var activeState
+    @State private var playUntil = Date().addingTimeInterval(ExplainerStage.cycle * 2)
+    @State private var start = Date()
+    @State private var now = Date()
+
+    private var playing: Bool { !reduceMotion && activeState != .inactive && now < playUntil }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { ctx in
-            let t = reduceMotion ? 1.3 : ctx.date.timeIntervalSinceReferenceDate
-            GeometryReader { geo in
-                let w = geo.size.width, h = geo.size.height
-                let src = CGPoint(x: w * 0.12, y: h / 2), eng = CGPoint(x: w * 0.5, y: h / 2)
-                let outs = scene.outputs.indices.map { i in
-                    CGPoint(x: w * 0.88, y: scene.outputs.count == 1 ? h / 2 : h * (0.22 + 0.56 * Double(i) / Double(scene.outputs.count - 1)))
+        GeometryReader { geo in
+            let layout = Layout(size: geo.size, outputs: scene.outputs.count)
+            ZStack {
+                TimelineView(.animation(minimumInterval: 1 / 24, paused: !playing)) { ctx in
+                    // Resting frame: tokens parked mid-journey.
+                    let t = playing ? ctx.date.timeIntervalSince(start) : Self.cycle * 0.3
+                    Canvas { g, _ in draw(g, layout, t) }
                 }
-                ZStack {
-                    // Rails
-                    Path { p in
-                        p.move(to: src); p.addLine(to: eng)
-                        for o in outs { p.move(to: eng); p.addCurve(to: o, control1: CGPoint(x: (eng.x + o.x) / 2, y: eng.y), control2: CGPoint(x: (eng.x + o.x) / 2, y: o.y)) }
-                    }
-                    .stroke(Color.secondary.opacity(0.28), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [4, 5], dashPhase: CGFloat(-t * 18)))
-
-                    node(scene.source, at: src, size: 46)
-                    engine(at: eng, t: t)
-                    ForEach(scene.outputs.indices, id: \.self) { i in node(scene.outputs[i], at: outs[i], size: 40) }
-
-                    ForEach(scene.tokens.indices, id: \.self) { i in
-                        let tok = scene.tokens[i]
-                        let cycle = 3.6, phase = (t / cycle + Double(i) / Double(scene.tokens.count)).truncatingRemainder(dividingBy: 1)
-                        let o = outs[min(tok.output, outs.count - 1)]
-                        let (pt, scale, opacity) = position(phase, src: src, eng: eng, out: o)
-                        Image(systemName: tok.symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 22, height: 22)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(phase < 0.45 ? Color.gray.opacity(0.75) : tok.tint))
-                            .shadow(color: (phase < 0.45 ? .clear : tok.tint).opacity(0.5), radius: 4)
-                            .scaleEffect(scale).opacity(opacity)
-                            .position(pt)
-                    }
-                }
+                ForEach(scene.outputs.indices, id: \.self) { i in node(scene.outputs[i], at: layout.outs[i], size: 40) }
+                node(scene.source, at: layout.src, size: 46)
+                engineIcon.position(layout.eng)
             }
         }
         .frame(height: height)
+        .contentShape(Rectangle())
+        .onHover { inside in if inside { replay(loops: 1.5) } }
+        .onAppear { replay(loops: 2) }
+        .task(id: playUntil) {
+            // Flip `playing` off when the burst ends so the TimelineView pauses.
+            let wait = playUntil.timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait + 0.05)) }
+            now = Date()
+        }
         .accessibilityHidden(true)
+    }
+
+    private func replay(loops: Double) {
+        let n = Date()
+        if n >= playUntil { start = n }
+        now = n
+        playUntil = max(playUntil, n.addingTimeInterval(Self.cycle * loops))
+    }
+
+    struct Layout {
+        var src: CGPoint, eng: CGPoint, outs: [CGPoint]
+        init(size: CGSize, outputs: Int) {
+            let w = size.width, h = size.height
+            src = CGPoint(x: w * 0.12, y: h / 2); eng = CGPoint(x: w * 0.5, y: h / 2)
+            outs = (0..<max(outputs, 1)).map { i in
+                CGPoint(x: w * 0.88, y: outputs <= 1 ? h / 2 : h * (0.22 + 0.56 * Double(i) / Double(outputs - 1)))
+            }
+        }
+    }
+
+    private func draw(_ g: GraphicsContext, _ l: Layout, _ t: Double) {
+        // Rails with marching dashes.
+        var rails = Path()
+        rails.move(to: l.src); rails.addLine(to: l.eng)
+        for o in l.outs { rails.move(to: l.eng); rails.addCurve(to: o, control1: CGPoint(x: (l.eng.x + o.x) / 2, y: l.eng.y), control2: CGPoint(x: (l.eng.x + o.x) / 2, y: o.y)) }
+        g.stroke(rails, with: .color(.secondary.opacity(0.28)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [4, 5], dashPhase: CGFloat(-t * 18)))
+
+        // Engine halo and effect.
+        let c = l.eng, etint = scene.engine.tint
+        let halo = 37 * (1 + 0.06 * sin(t * 2.4))
+        g.fill(Path(ellipseIn: CGRect(x: c.x - halo, y: c.y - halo, width: halo * 2, height: halo * 2)), with: .color(etint.opacity(0.10)))
+        func arc(_ r: Double, _ from: Double, _ len: Double, _ width: CGFloat, _ op: Double) {
+            var p = Path(); p.addArc(center: c, radius: r, startAngle: .radians(from), endAngle: .radians(from + len), clockwise: false)
+            g.stroke(p, with: .color(etint.opacity(op)), style: StrokeStyle(lineWidth: width, lineCap: .round))
+        }
+        switch scene.effect {
+        case .scan: arc(33, t * 3, .pi * 0.44, 3, 0.8)
+        case .shield:
+            let f = (t * 0.8).truncatingRemainder(dividingBy: 1), r = 28 * (1 + 0.4 * f)
+            g.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)), with: .color(etint.opacity(0.5 - 0.5 * f)), lineWidth: 2)
+        case .filter:
+            for i in 0..<3 {
+                let w = 30 - Double(i) * 8, y = c.y + 28 + Double(i) * 7 - 7 + sin(t * 3 + Double(i)) * 1.5
+                g.fill(Path(roundedRect: CGRect(x: c.x - w / 2, y: y, width: w, height: 3), cornerRadius: 1.5), with: .color(etint.opacity(0.55)))
+            }
+        case .sync:
+            arc(32, -t * 2, .pi * 0.8, 2.5, 0.7); arc(32, -t * 2 + .pi, .pi * 0.8, 2.5, 0.4)
+        case .pulse:
+            let r = 32 * (1 + 0.08 * sin(t * 4))
+            g.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)), with: .color(etint.opacity(0.25)), lineWidth: 2)
+        }
+
+        // Tokens.
+        for (i, tok) in scene.tokens.enumerated() {
+            let phase = (t / Self.cycle + Double(i) / Double(scene.tokens.count)).truncatingRemainder(dividingBy: 1)
+            let (pt, scale, opacity) = position(phase, src: l.src, eng: l.eng, out: l.outs[min(tok.output, l.outs.count - 1)])
+            guard opacity > 0.01 else { continue }
+            let side = 22 * scale
+            var tg = g
+            tg.opacity = opacity
+            tg.fill(Path(roundedRect: CGRect(x: pt.x - side / 2, y: pt.y - side / 2, width: side, height: side), cornerRadius: 6 * scale),
+                    with: .color(phase < 0.45 ? Color.gray.opacity(0.75) : tok.tint))
+            tg.draw(tg.resolve(Text(Image(systemName: tok.symbol)).font(.system(size: 11 * scale, weight: .semibold)).foregroundColor(.white)), at: pt)
+        }
     }
 
     private func position(_ p: Double, src: CGPoint, eng: CGPoint, out: CGPoint) -> (CGPoint, CGFloat, Double) {
@@ -257,51 +316,33 @@ struct ExplainerStage: View {
         .position(x: p.x, y: p.y + 8)
     }
 
-    private func engine(at p: CGPoint, t: Double) -> some View {
+    private var engineIcon: some View {
         let tint = scene.engine.tint
         return ZStack {
-            Circle().fill(tint.opacity(0.10)).frame(width: 74, height: 74)
-                .scaleEffect(1 + 0.06 * sin(t * 2.4))
-            switch scene.effect {
-            case .scan:
-                Circle().trim(from: 0, to: 0.22).stroke(tint.opacity(0.8), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .frame(width: 66, height: 66).rotationEffect(.radians(t * 3))
-            case .shield:
-                Circle().stroke(tint.opacity(0.5 - 0.5 * (t * 0.8).truncatingRemainder(dividingBy: 1)), lineWidth: 2)
-                    .frame(width: 56, height: 56).scaleEffect(1 + 0.4 * (t * 0.8).truncatingRemainder(dividingBy: 1))
-            case .filter:
-                ForEach(0..<3) { i in
-                    Capsule().fill(tint.opacity(0.55)).frame(width: 30 - CGFloat(i) * 8, height: 3)
-                        .offset(y: CGFloat(i) * 7 - 7 + CGFloat(sin(t * 3 + Double(i))) * 1.5)
-                        .offset(y: 28)
-                }
-            case .sync:
-                Circle().trim(from: 0, to: 0.4).stroke(tint.opacity(0.7), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    .frame(width: 64, height: 64).rotationEffect(.radians(-t * 2))
-                Circle().trim(from: 0.5, to: 0.9).stroke(tint.opacity(0.4), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    .frame(width: 64, height: 64).rotationEffect(.radians(-t * 2))
-            case .pulse:
-                Circle().stroke(tint.opacity(0.25), lineWidth: 2).frame(width: 64, height: 64)
-                    .scaleEffect(1 + 0.08 * sin(t * 4))
-            }
             Image(systemName: scene.engine.symbol).font(.system(size: 22, weight: .semibold)).foregroundStyle(tint)
                 .frame(width: 50, height: 50).background(Circle().fill(.background))
                 .overlay(Circle().strokeBorder(tint.opacity(0.5), lineWidth: 1.5))
             Text(scene.engine.label).font(.system(size: 10, weight: .semibold)).foregroundStyle(tint).offset(y: 44)
         }
-        .position(p)
     }
 }
 
-/// The step captions advance in step with the animation.
+/// The step captions advance in step with the animation, for two passes, then rest (hover to replay).
 struct ExplainerSteps: View {
     let steps: [String]
     let tint: Color
+    static let interval = 2.4
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.controlActiveState) private var activeState
+    @State private var start = Date()
+    @State private var until = Date()
+    @State private var now = Date()
+
+    private var playing: Bool { !reduceMotion && activeState != .inactive && now < until }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 2.4)) { ctx in
-            let active = reduceMotion ? -1 : Int(ctx.date.timeIntervalSinceReferenceDate / 2.4) % max(steps.count, 1)
+        TimelineView(.animation(minimumInterval: Self.interval, paused: !playing)) { ctx in
+            let active = playing ? Int(ctx.date.timeIntervalSince(start) / Self.interval) % max(steps.count, 1) : -1
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(steps.indices, id: \.self) { i in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -309,13 +350,28 @@ struct ExplainerSteps: View {
                             .foregroundStyle(i == active ? .white : tint)
                             .frame(width: 18, height: 18)
                             .background(Circle().fill(i == active ? tint : tint.opacity(0.14)))
-                        Text(steps[i]).font(.callout).foregroundStyle(i == active ? .primary : .secondary)
+                        Text(steps[i]).font(.callout).foregroundStyle(i == active || active < 0 ? .primary : .secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .animation(.snappy, value: active)
                 }
             }
         }
+        .contentShape(Rectangle())
+        .onAppear { replay() }
+        .onHover { if $0 { replay() } }
+        .task(id: until) {
+            let wait = until.timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait + 0.05)) }
+            now = Date()
+        }
+    }
+
+    private func replay() {
+        let n = Date()
+        if n >= until { start = n }
+        now = n
+        until = max(until, n.addingTimeInterval(Self.interval * Double(steps.count) * 2))
     }
 }
 
@@ -347,7 +403,6 @@ struct ModuleIntroCard: View {
                 .buttonStyle(.plain).padding(8).help("Hide (bring it back with How it works in the toolbar)")
         }
         .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 4)
-        .transition(.move(edge: .top).combined(with: .opacity))
     }
 }
 

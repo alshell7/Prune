@@ -37,6 +37,7 @@ enum AuditLog {
     }
 
     static func load() -> [CleanOutcome] {
+        if DemoMode.active { return DemoData.history }
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601

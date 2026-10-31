@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Notifier.requestAuthorization()
         Task { @MainActor in
+            if DemoMode.active { DemoData.install() }
             AppSettings.shared.applyAppearance()
             FolderWatcher.shared.start()
             Updater.shared.startSchedule()

@@ -107,7 +107,7 @@ enum ProjectDoctor {
         func add(_ i: DoctorIssue) { lock.lock(); issues.append(i); lock.unlock() }
 
         progress("Checking virtualenvs…")
-        DispatchQueue.concurrentPerform(iterations: index.venvs.count) { i in
+        Throttled.forEach(index.venvs.count) { i in
             let venv = index.venvs[i]
             let h = venvHealth(venv)
             guard h.broken else { return }
@@ -155,7 +155,7 @@ enum ProjectDoctor {
         }
 
         progress("Checking git object stores…")
-        DispatchQueue.concurrentPerform(iterations: repos.count) { i in
+        Throttled.forEach(repos.count) { i in
             let repo = repos[i]
             let gitDir = repo.appendingPathComponent(".git")
             if let alt = FS.readText(gitDir.appendingPathComponent("objects/info/alternates"), limit: 16_384) {
@@ -211,7 +211,7 @@ enum ProjectDoctor {
 
         progress("Checking symlinks…")
         let roots = index.projects.values.filter { $0.gitKind != .none || index.outermostProject(for: $0.root) == $0.root.path }.map(\.root)
-        DispatchQueue.concurrentPerform(iterations: roots.count) { i in
+        Throttled.forEach(roots.count) { i in
             for issue in danglingLinks(in: roots[i]) { add(issue) }
         }
         return issues.sorted { ($0.level, $0.bytes) > ($1.level, $1.bytes) }

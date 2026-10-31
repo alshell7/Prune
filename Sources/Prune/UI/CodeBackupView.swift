@@ -34,10 +34,10 @@ final class CodeBackupModel {
     var atRisk: [RepoStatus] { own.filter { $0.level >= .uncommitted } }
 
     func refresh(settings: SettingsSnapshot) {
-        guard !loading else { return }
+        guard !loading, !DemoMode.active else { return }
         loading = true
         Task {
-            let list = await AppModel.background { CodeBackup.analyze(settings: settings) { m in Task { @MainActor in CodeBackupModel.shared.status = m } } }
+            let list = await AppModel.utility { CodeBackup.analyze(settings: settings) { m in Task { @MainActor in CodeBackupModel.shared.status = m } } }
             withAnimation(.spring(duration: 0.5)) {
                 repos = list
                 loading = false

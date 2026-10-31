@@ -15,10 +15,10 @@ final class DoctorModel {
     var toast: (ok: Bool, text: String)?
 
     func refresh(settings: SettingsSnapshot) {
-        guard !loading else { return }
+        guard !loading, !DemoMode.active else { return }
         loading = true
         Task {
-            let list = await AppModel.background {
+            let list = await AppModel.utility {
                 ProjectDoctor.scan(index: ProjectIndex.cached(roots: settings.resolvedScanRoots(), settings: settings)) { m in Task { @MainActor in DoctorModel.shared.status = m } }
             }
             withAnimation(.spring(duration: 0.45)) { issues = list; loading = false; checkedAt = Date() }
@@ -77,7 +77,7 @@ struct DoctorView: View {
                     Card {
                         HStack(spacing: 14) {
                             Image(systemName: dm.checkedAt == nil ? "stethoscope" : "heart.text.square.fill").font(.system(size: 34)).foregroundStyle(.pink)
-                                .symbolEffect(.pulse, isActive: dm.checkedAt == nil)
+                                .symbolEffect(.pulse, isActive: dm.loading)
                             Text(dm.checkedAt == nil ? "Examine your projects to find broken environments and links." : "No broken environments, links, locks or bloated repositories.")
                                 .foregroundStyle(.secondary)
                         }

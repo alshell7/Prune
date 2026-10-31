@@ -61,7 +61,9 @@ final class AppModel {
 
     var volumes: [VolumeInfo] = []
     var hasFDA = true
-    var route: Route? = .overview { didSet { if let route { ModuleGuide.noteVisit(route) } } }
+    var route: Route? = .overview {
+        didSet { if let route, route != oldValue { DispatchQueue.main.async { ModuleGuide.noteVisit(route) } } }
+    }
     /// Mount path of the disk the cleanup views focus on; nil means every analyzed disk.
     var diskScope: String? { didSet { recomputeSummary() } }
     var focusedItemID: String?
@@ -127,7 +129,7 @@ final class AppModel {
                 lowSpaceNotified = false
             }
         }
-        if settings.autoScanHours > 0, !isScanning, !isCleaning {
+        if settings.autoScanHours > 0, !isScanning, !isCleaning, !DemoMode.active {
             let due = (settings.lastScanDate ?? .distantPast).addingTimeInterval(TimeInterval(settings.autoScanHours) * 3600)
             if Date() > due { scan() }
         }
@@ -136,7 +138,7 @@ final class AppModel {
     // MARK: - Scanning
 
     func scan() {
-        guard !isScanning, !isCleaning else { return }
+        guard !isScanning, !isCleaning, !DemoMode.active else { return }
         isScanning = true
         items = []
         selection = []
@@ -198,6 +200,13 @@ final class AppModel {
             }
             DispatchQueue.global(qos: .userInitiated).async { finish(work()) }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
+    /// For long analyzers: runs below the UI and your other apps.
+    nonisolated static func utility<T>(_ work: @escaping () -> T) async -> T {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .utility).async { cont.resume(returning: work()) }
         }
     }
 
@@ -358,7 +367,7 @@ enum Notifier {
     }
 
     static func post(title: String, body: String) {
-        guard available else { return }
+        guard available, !DemoMode.active else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

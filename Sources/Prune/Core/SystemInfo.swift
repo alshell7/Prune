@@ -19,6 +19,7 @@ struct VolumeInfo: Identifiable, Hashable {
 
 enum SystemInfo {
     static func volumes() -> [VolumeInfo] {
+        if DemoMode.active { return DemoData.volumes }
         let keys: [URLResourceKey] = [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey,
                                       .volumeAvailableCapacityForImportantUsageKey, .volumeIsInternalKey,
                                       .volumeIsBrowsableKey, .volumeIsRootFileSystemKey, .volumeIsLocalKey]

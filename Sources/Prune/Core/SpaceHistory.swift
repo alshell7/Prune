@@ -16,10 +16,14 @@ final class SpaceHistory {
     private var lastSave = Date.distantPast
 
     private init() {
+        if DemoMode.active { series = DemoData.timeline(); return }
         if let data = try? Data(contentsOf: file), let decoded = try? JSONDecoder().decode([String: Series].self, from: data) { series = decoded }
     }
 
+    func reloadDemo() { series = DemoData.timeline() }
+
     func record(_ volumes: [VolumeInfo], now: Date = Date()) {
+        guard !DemoMode.active else { return }
         var changed = false
         for v in volumes where v.total > 0 {
             let key = v.isBoot ? "boot" : v.url.path

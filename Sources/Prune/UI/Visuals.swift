@@ -75,8 +75,11 @@ struct DiskHero: View {
                         .foregroundStyle(volume.usedFraction > 0.95 ? .red : .primary)
                     Text("free of \(Fmt.bytes(volume.total))").font(.caption).foregroundStyle(.secondary)
                     if recommended > 0 {
-                        Text("\u{2192} up to \(Fmt.bytes(min(volume.total, volume.available + recommended))) after cleanup & emptying Trash").font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                        // Kept inside the ring's hole (about 140 pt wide).
+                        Text("\u{2192} \(Fmt.bytes(min(volume.total, volume.available + recommended))) after cleanup").font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                            .lineLimit(1).minimumScaleFactor(0.7).frame(maxWidth: 128)
                             .padding(.top, 4)
+                            .help("Free space after the recommended cleanup and emptying the Trash")
                     }
                 }
             }

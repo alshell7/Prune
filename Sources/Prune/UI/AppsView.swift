@@ -39,7 +39,7 @@ final class AppsModel {
     func count(_ f: Filter) -> Int { apps.filter { Self.matches($0, f) }.count }
 
     func load() {
-        guard !loading else { return }
+        guard !loading, !DemoMode.active else { return }
         loading = true
         Task {
             let list = await AppModel.background { AppsCatalog.load { m in Task { @MainActor in AppsModel.shared.status = m } } }

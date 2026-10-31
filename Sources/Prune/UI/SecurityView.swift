@@ -52,12 +52,13 @@ final class SecurityModel {
     func worst(_ a: SecurityArea) -> Severity? { report.findings.filter { $0.area == a && !$0.inventoryOnly }.map(\.severity).max() }
 
     func scan(settings: SettingsSnapshot) {
+        guard !DemoMode.active else { return }
         guard !scanning else { return }
         scanning = true
         status = "Starting…"
         osvDone = false
         Task {
-            let r = await AppModel.background { SecurityScanner.run(settings: settings) { m in Task { @MainActor in SecurityModel.shared.status = m } } }
+            let r = await AppModel.utility { SecurityScanner.run(settings: settings) { m in Task { @MainActor in SecurityModel.shared.status = m } } }
             withAnimation(.spring(duration: 0.5)) {
                 report = r
                 if let s = r.secrets { SecretsModel.shared.adopt(s) }
@@ -446,34 +447,45 @@ struct FlowChain: View {
     @State private var shown = 0
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        // Side by side when it fits; otherwise stacked, so no node is cut off in a narrow pane.
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 0) {
                 ForEach(Array(nodes.enumerated()), id: \.offset) { i, n in
-                    if i > 0 {
-                        ArrowLink(risky: n.risky).frame(width: 34, height: 14)
-                            .opacity(i < shown ? 1 : 0)
-                    }
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(n.kind.uppercased()).font(.system(size: 9, weight: .bold)).foregroundStyle(n.risky ? .orange : .secondary)
-                        Text(n.label).font(.callout.weight(.medium)).lineLimit(2).frame(maxWidth: 170, alignment: .leading)
-                        if !n.detail.isEmpty { Text(n.detail).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).frame(maxWidth: 170, alignment: .leading) }
-                    }
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(n.risky ? Color.orange.opacity(0.1) : Color.primary.opacity(0.04)))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(n.risky ? Color.orange.opacity(0.7) : Color.primary.opacity(0.1), lineWidth: n.risky ? 1.5 : 1))
-                    .help(n.detail)
-                    .scaleEffect(i < shown ? 1 : 0.85)
-                    .opacity(i < shown ? 1 : 0)
+                    if i > 0 { ArrowLink(risky: n.risky).frame(width: 34, height: 14).opacity(i < shown ? 1 : 0) }
+                    node(i, n)
                 }
             }
-            .padding(.vertical, 4)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(nodes.enumerated()), id: \.offset) { i, n in
+                    if i > 0 {
+                        Image(systemName: "arrow.down").font(.caption.weight(.semibold)).foregroundStyle(n.risky ? .orange : .secondary)
+                            .frame(height: 18).padding(.leading, 18).opacity(i < shown ? 1 : 0)
+                    }
+                    node(i, n)
+                }
+            }
         }
+        .padding(.vertical, 4)
         .onAppear {
             shown = 0
             for i in 0...nodes.count {
                 withAnimation(.spring(duration: 0.4).delay(Double(i) * 0.12)) { shown = i + 1 }
             }
         }
+    }
+
+    private func node(_ i: Int, _ n: ChainNode) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(n.kind.uppercased()).font(.system(size: 9, weight: .bold)).foregroundStyle(n.risky ? .orange : .secondary)
+            Text(n.label).font(.callout.weight(.medium)).lineLimit(2).frame(maxWidth: 170, alignment: .leading)
+            if !n.detail.isEmpty { Text(n.detail).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).frame(maxWidth: 170, alignment: .leading) }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(n.risky ? Color.orange.opacity(0.1) : Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(n.risky ? Color.orange.opacity(0.7) : Color.primary.opacity(0.1), lineWidth: n.risky ? 1.5 : 1))
+        .help(n.detail)
+        .scaleEffect(i < shown ? 1 : 0.85)
+        .opacity(i < shown ? 1 : 0)
     }
 }
 

@@ -50,10 +50,11 @@ final class SecretsModel {
     }
 
     func refresh(settings: SettingsSnapshot) {
-        guard !loading else { return }
+        guard !loading, !DemoMode.active else { return }
+        if SecurityModel.shared.scanning { status = "Waiting for the security check, which includes secrets…"; return }
         loading = true
         Task {
-            let r = await AppModel.background {
+            let r = await AppModel.utility {
                 SecretsEngine.scan(index: ProjectIndex.cached(roots: settings.resolvedScanRoots(), settings: settings), settings: settings) { m in
                     Task { @MainActor in SecretsModel.shared.status = m }
                 }
@@ -110,7 +111,7 @@ struct SecretsView: View {
             }
         }
         .navigationTitle("Secrets")
-        .onAppear { if sm.report.scannedAt == nil && !sm.loading { sm.refresh(settings: model.settings.snapshot) } }
+        .onAppear { if sm.report.scannedAt == nil && !sm.loading && !SecurityModel.shared.scanning { sm.refresh(settings: model.settings.snapshot) } }
         .alert(confirm?.title ?? "", isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } })) {
             Button(confirm?.button ?? "OK") { confirm?.work() }
             Button("Cancel", role: .cancel) {}

@@ -455,11 +455,23 @@ enum SecretsEngine {
         var found = [SecretFile?](repeating: nil, count: candidates.count)
         var large = 0, unreadable = 0
         let lock = NSLock()
-        DispatchQueue.concurrentPerform(iterations: candidates.count) { i in
+        Throttled.forEach(candidates.count) { i in
             let (file, env) = candidates[i]
-            let (text, tooLarge, worldReadable) = read(file)
             let code = !env && codeExtensions.contains(file.pathExtension.lowercased())
-            var hits = text.map { detect(in: $0, envFile: env, codeFile: code) } ?? []
+            // Unchanged files (same size and modification time) reuse their last result.
+            var st = stat()
+            let statOK = lstat(file.path, &st) == 0
+            let stamp = statOK ? "\(st.st_size):\(st.st_mtimespec.tv_sec):\(st.st_mtimespec.tv_nsec)" : ""
+            let cached = statOK ? resultCache.get(file.path, stamp) : nil
+            let text: String?, tooLarge: Bool, worldReadable: Bool
+            var hits: [SecretHit]
+            if let cached {
+                (text, tooLarge, worldReadable, hits) = (cached.readable ? "" : nil, cached.tooLarge, st.st_mode & 0o004 != 0, cached.hits)
+            } else {
+                (text, tooLarge, worldReadable) = read(file)
+                hits = text.map { detect(in: $0, envFile: env, codeFile: code) } ?? []
+                if statOK { resultCache.set(file.path, stamp, .init(hits: hits, readable: text != nil, tooLarge: tooLarge)) }
+            }
             hits.removeAll { ignoredIDs.contains(file.path + "#" + $0.fingerprint) }
             let example = env ? isExample(file.lastPathComponent) : false
             if example || isTestPath(file.path) {
@@ -491,7 +503,7 @@ enum SecretsEngine {
             if let root = index.scopeRoot(for: f.url), let p = index.projects[root], p.gitKind != .none { byRepo[root, default: []].append(i) }
         }
         let repos = Array(byRepo.keys)
-        DispatchQueue.concurrentPerform(iterations: repos.count) { r in
+        Throttled.forEach(repos.count) { r in
             let root = repos[r], repo = URL(fileURLWithPath: root)
             let ls = Git.run(repo, ["ls-files", "--cached", "-z"], timeout: 60)
             let tracked: Set<String>? = ls.ok ? Set(ls.stdout.split(separator: "\0").map(String.init)) : nil
@@ -529,6 +541,16 @@ enum SecretsEngine {
         }
         return report
     }
+
+    /// Per-file detection results keyed by size and modification time, so rescans only read what changed.
+    final class ResultCache: @unchecked Sendable {
+        struct Entry { var hits: [SecretHit]; var readable: Bool; var tooLarge: Bool }
+        private var map: [String: (String, Entry)] = [:]
+        private let lock = NSLock()
+        func get(_ path: String, _ stamp: String) -> Entry? { lock.lock(); defer { lock.unlock() }; return map[path].flatMap { $0.0 == stamp ? $0.1 : nil } }
+        func set(_ path: String, _ stamp: String, _ e: Entry) { lock.lock(); map[path] = (stamp, e); lock.unlock() }
+    }
+    static let resultCache = ResultCache()
 
     static func isTestPath(_ path: String) -> Bool {
         let p = path.lowercased()
