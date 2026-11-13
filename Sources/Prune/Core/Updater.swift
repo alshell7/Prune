@@ -7,7 +7,7 @@ enum AppInfo {
     static let repoURL = URL(string: "https://github.com/\(repo)")!
     static let maintainer = "alshell7"
     static let maintainerURL = URL(string: "https://github.com/alshell7")!
-    static let fallbackVersion = "1.1.1"
+    static let fallbackVersion = "1.1.2"
     static var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? fallbackVersion }
     static var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev" }
 

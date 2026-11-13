@@ -231,6 +231,7 @@ struct Sidebar: View {
             }
             // A real footer (not an overlay), so it never covers the last sidebar rows.
             SidebarDiskFooter()
+            if !DemoMode.active { SidebarUtilityBar() }
         }
     }
 }
@@ -263,5 +264,90 @@ struct SidebarDiskFooter: View {
             .animation(.snappy, value: boot.available)
             .overlay(alignment: .top) { Divider() }
         }
+    }
+}
+
+/// Bottom bar of the sidebar: Settings one click away, plus quick appearance, tour and About/updates,
+/// so nobody has to hunt through the menu bar for them.
+struct SidebarUtilityBar: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @State private var updater = Updater.shared
+
+    private var appearanceSymbol: String {
+        switch model.settings.appearance {
+        case "light": "sun.max"
+        case "dark": "moon.stars"
+        default: "circle.lefthalf.filled"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            SettingsLink {
+                Label("Settings", systemImage: "gearshape")
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(SidebarBarButtonStyle(expand: true))
+            .help("Open Prune Settings (⌘,)")
+
+            Menu {
+                Picker("Appearance", selection: Binding(get: { model.settings.appearance }, set: { model.settings.appearance = $0 })) {
+                    Label("System", systemImage: "circle.lefthalf.filled").tag("system")
+                    Label("Light", systemImage: "sun.max").tag("light")
+                    Label("Dark", systemImage: "moon.stars").tag("dark")
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: appearanceSymbol)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
+            .buttonStyle(SidebarBarButtonStyle())
+            .fixedSize()
+            .help("Appearance: \(model.settings.appearance.capitalized)")
+            .accessibilityLabel("Appearance")
+
+            Button { ModuleGuide.shared.showTour = true } label: { Image(systemName: "questionmark.circle") }
+                .buttonStyle(SidebarBarButtonStyle())
+                .help("Take the Prune tour")
+                .accessibilityLabel("Prune tour")
+
+            Button { openWindow(id: "about") } label: {
+                Image(systemName: "info.circle")
+                    .overlay(alignment: .topTrailing) {
+                        if updater.available != nil {
+                            Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+                                .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                                .offset(x: 3, y: -3)
+                        }
+                    }
+            }
+            .buttonStyle(SidebarBarButtonStyle())
+            .help(updater.available.map { "Prune \($0.version) is available" } ?? "About Prune and updates")
+            .accessibilityLabel(updater.available != nil ? "About Prune, update available" : "About Prune")
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .overlay(alignment: .top) { Divider() }
+    }
+}
+
+/// Quiet, borderless sidebar control with a soft hover/press highlight.
+struct SidebarBarButtonStyle: ButtonStyle {
+    var expand = false
+    @State private var hover = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, expand ? 10 : 7).padding(.vertical, 6)
+            .frame(minWidth: 28, minHeight: 26)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(configuration.isPressed ? 0.12 : hover ? 0.07 : 0)))
+            .foregroundStyle(hover ? .primary : .secondary)
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .onHover { h in withAnimation(.snappy(duration: 0.15)) { hover = h } }
     }
 }
