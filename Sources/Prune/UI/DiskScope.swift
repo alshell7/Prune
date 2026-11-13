@@ -43,12 +43,14 @@ struct DiskScopeBar: View {
 }
 
 /// Small tag naming the disk a path lives on, shown for anything not on the startup disk.
+/// Takes the already-resolved volume rather than reading `AppModel` from the environment:
+/// it is rendered inside Table/List rows, whose AppKit-hosted cells can be rebuilt (e.g. when a
+/// column header re-sorts the table) without the Observable environment value, which traps.
 struct VolumeBadge: View {
-    @Environment(AppModel.self) private var model
-    let url: URL
+    let volume: VolumeInfo?
 
     var body: some View {
-        if let v = model.volume(for: url), !v.isBoot {
+        if let v = volume, !v.isBoot {
             Label(v.name, systemImage: "externaldrive.fill")
                 .labelStyle(.titleAndIcon)
                 .font(.caption2.weight(.medium)).foregroundStyle(.teal)

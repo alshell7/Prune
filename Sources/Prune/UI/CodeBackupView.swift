@@ -160,7 +160,7 @@ struct CodeBackupView: View {
                             Image(systemName: r.level.symbol).foregroundStyle(r.level.color).frame(width: 20)
                                 .symbolEffect(.bounce, value: r.level)
                             VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 5) { Text(r.name).fontWeight(.medium); VolumeBadge(url: r.path) }
+                                HStack(spacing: 5) { Text(r.name).fontWeight(.medium); VolumeBadge(volume: model.volume(for: r.path)) }
                                 Text(r.headline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 Text(FS.tildePath(r.path.deletingLastPathComponent())).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                             }

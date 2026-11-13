@@ -107,7 +107,7 @@ struct DoctorView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(i.title).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
-                    VolumeBadge(url: i.path)
+                    VolumeBadge(volume: model.volume(for: i.path))
                 }
                 Text(i.detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(i.evidence, id: \.self) { Text("• " + $0).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }

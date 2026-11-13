@@ -152,7 +152,7 @@ struct CategoryView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 5) {
                             Text(item.title).lineLimit(1).truncationMode(.middle)
-                            if let p = item.paths.first { VolumeBadge(url: p) }
+                            if let p = item.paths.first { VolumeBadge(volume: model.volume(for: p)) }
                         }
                         Text((item.group.map { $0 + " · " } ?? "") + item.reason)
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)

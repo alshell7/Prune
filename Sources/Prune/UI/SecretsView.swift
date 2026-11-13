@@ -180,7 +180,7 @@ struct SecretsView: View {
                         Text(f.headline).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer()
-                    VolumeBadge(url: f.url)
+                    VolumeBadge(volume: model.volume(for: f.url))
                     SeverityPill(severity: f.severity)
                 }
                 .padding(.vertical, 2)
